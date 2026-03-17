@@ -291,7 +291,7 @@ echo "    cd \"$BOT_DIR\""
 echo "    bun run server.ts"
 echo ""
 echo "  后台运行:"
-echo "    nohup bun run server.ts > /tmp/feishu-cursor.log 2>&1 &"
+echo "    nohup bun run server.ts > /tmp/nonoclaw.log 2>&1 &"
 echo ""
 echo "  开机自启: bash service.sh install"
 fi
