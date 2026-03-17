@@ -18,7 +18,7 @@
  */
 
 import { Database } from "bun:sqlite";
-import { resolve, basename } from "node:path";
+import { resolve } from "node:path";
 import {
 	existsSync,
 	readFileSync,
@@ -30,7 +30,9 @@ import {
 
 // ── 配置 ──────────────────────────────────────────
 
-const HOME = process.env.HOME!;
+const HOME = process.env.HOME;
+if (!HOME) { console.error("[蒸馏] 错误: $HOME 环境变量未设置"); process.exit(1); }
+
 const CURSOR_CHATS_DIR = resolve(HOME, ".cursor/chats");
 const STATE_FILENAME = "distill-state.json";
 const EXTRACT_FILENAME = "_chat-extract.md";
@@ -57,11 +59,6 @@ function parseArgs(): { workspacePath: string; sinceHours: number } {
 
 // ── 工作区 Hash 自动发现 ──────────────────────────
 
-interface WorkspaceMapping {
-	hash: string;
-	path: string;
-}
-
 function discoverWorkspaceHashes(targetPath: string): string[] {
 	if (!existsSync(CURSOR_CHATS_DIR)) return [];
 
@@ -70,14 +67,16 @@ function discoverWorkspaceHashes(targetPath: string): string[] {
 
 	for (const hash of readdirSync(CURSOR_CHATS_DIR)) {
 		const wsDir = resolve(CURSOR_CHATS_DIR, hash);
-		if (!statSync(wsDir).isDirectory()) continue;
+		try { if (!statSync(wsDir).isDirectory()) continue; } catch { continue; }
 
 		for (const convId of readdirSync(wsDir)) {
 			const dbPath = resolve(wsDir, convId, "store.db");
 			if (!existsSync(dbPath)) continue;
 
+			let db: Database | null = null;
 			try {
-				const db = new Database(dbPath, { create: false, readwrite: true });
+				// Bun 的 readonly 在 WAL 模式 SQLite 上会失败，需用 readwrite 但不做写操作
+				db = new Database(dbPath, { create: false, readwrite: true });
 				const rows = db.prepare("SELECT data FROM blobs LIMIT 3").all() as { data: Uint8Array }[];
 
 				for (const { data } of rows) {
@@ -85,16 +84,16 @@ function discoverWorkspaceHashes(targetPath: string): string[] {
 					const match = text.match(/Workspace Path: ([^\n\\]+)/);
 					if (match) {
 						const found = match[1].trim().replace(/\/+$/, "");
-						db.close();
 						if (found === normalizedTarget) matched.push(hash);
 						break;
 					}
 				}
-				db.close();
 			} catch {
-				continue;
+				// 数据库打不开或查询失败，跳过
+			} finally {
+				try { db?.close(); } catch {}
 			}
-			break;
+			break; // 每个 hash 只需检查第一个会话即可确定工作区
 		}
 	}
 
@@ -115,7 +114,7 @@ function loadState(memoryDir: string): DistillState {
 	if (existsSync(statePath)) {
 		try {
 			return JSON.parse(readFileSync(statePath, "utf-8"));
-		} catch {}
+		} catch { /* 文件损坏，返回默认值 */ }
 	}
 	return {
 		lastDistillAt: "",
@@ -154,30 +153,58 @@ function extractMeta(db: Database): ConversationMeta | null {
 		const row = db.prepare("SELECT value FROM meta WHERE key='0'").get() as { value: string } | null;
 		if (!row) return null;
 		return JSON.parse(Buffer.from(row.value, "hex").toString("utf-8"));
-	} catch {
+	} catch (e) {
+		console.warn(`[蒸馏] meta 解码失败: ${e instanceof Error ? e.message : e}`);
 		return null;
 	}
 }
+
+// Cursor 注入的系统标签（提取时需要清除的噪音）
+const SYSTEM_TAG_PATTERN = /<(?:user_info|git_status|agent_transcripts|rules|open_and_recently_viewed_files|system_reminder|attached_files|task_notification|agent_skills|cursor_commands)>[\s\S]*?<\/\1>/g;
 
 function cleanUserContent(raw: string): string {
 	const uqMatch = raw.match(/<user_query>\s*([\s\S]*?)\s*<\/user_query>/);
 	if (uqMatch) return uqMatch[1].trim();
 
 	let cleaned = raw;
-	cleaned = cleaned.replace(/<user_info>[\s\S]*?<\/user_info>/g, "");
-	cleaned = cleaned.replace(/<git_status>[\s\S]*?<\/git_status>/g, "");
-	cleaned = cleaned.replace(/<agent_transcripts>[\s\S]*?<\/agent_transcripts>/g, "");
-	cleaned = cleaned.replace(/<rules>[\s\S]*?<\/rules>/g, "");
-	cleaned = cleaned.replace(/<open_and_recently_viewed_files>[\s\S]*?<\/open_and_recently_viewed_files>/g, "");
-	cleaned = cleaned.replace(/<system_reminder>[\s\S]*?<\/system_reminder>/g, "");
-	cleaned = cleaned.replace(/<attached_files>[\s\S]*?<\/attached_files>/g, "");
+	cleaned = cleaned.replace(/<(?:user_info|git_status|agent_transcripts|rules|open_and_recently_viewed_files|system_reminder|attached_files|task_notification|agent_skills|cursor_commands)>[\s\S]*?<\/(?:user_info|git_status|agent_transcripts|rules|open_and_recently_viewed_files|system_reminder|attached_files|task_notification|agent_skills|cursor_commands)>/g, "");
 
 	return cleaned.trim();
 }
 
+/**
+ * 字符串感知的 JSON 对象边界查找。
+ * 从 start 位置开始，追踪花括号深度，在字符串内部（被 " 包裹）忽略花括号。
+ */
+function findJsonEnd(text: string, start: number, maxLen = 500_000): number {
+	let depth = 0;
+	let inString = false;
+	const limit = Math.min(start + maxLen, text.length);
+
+	for (let i = start; i < limit; i++) {
+		const ch = text[i];
+
+		if (inString) {
+			if (ch === "\\" ) { i++; continue; } // 跳过转义字符
+			if (ch === '"') inString = false;
+			continue;
+		}
+
+		if (ch === '"') { inString = true; continue; }
+		if (ch === "{") depth++;
+		else if (ch === "}") {
+			depth--;
+			if (depth === 0) return i + 1;
+		}
+	}
+
+	return -1; // 未找到匹配的闭合括号
+}
+
 function extractConversation(dbPath: string): ExtractedConversation | null {
+	let db: Database | null = null;
 	try {
-		const db = new Database(dbPath, { create: false, readwrite: true });
+		db = new Database(dbPath, { create: false, readwrite: true });
 		const meta = extractMeta(db);
 		if (!meta) { db.close(); return null; }
 
@@ -187,23 +214,13 @@ function extractConversation(dbPath: string): ExtractedConversation | null {
 		for (const { data } of rows) {
 			const text = Buffer.from(data).toString("utf-8");
 
-			const jsonPattern = /\{"role":"(user|assistant)"[^]*?"content"/g;
+			const jsonPattern = /\{"role":"(user|assistant)"/g;
 			let match: RegExpExecArray | null;
 
 			while ((match = jsonPattern.exec(text)) !== null) {
 				const start = match.index;
-				let depth = 0;
-				let end = start;
-
-				for (let i = start; i < Math.min(start + 500_000, text.length); i++) {
-					if (text[i] === "{") depth++;
-					else if (text[i] === "}") {
-						depth--;
-						if (depth === 0) { end = i + 1; break; }
-					}
-				}
-
-				if (depth !== 0) continue;
+				const end = findJsonEnd(text, start);
+				if (end === -1) continue;
 
 				try {
 					const msg = JSON.parse(text.slice(start, end));
@@ -239,6 +256,7 @@ function extractConversation(dbPath: string): ExtractedConversation | null {
 		}
 
 		db.close();
+		db = null;
 
 		if (turns.length === 0) return null;
 
@@ -248,8 +266,11 @@ function extractConversation(dbPath: string): ExtractedConversation | null {
 			createdAt: new Date(meta.createdAt),
 			turns,
 		};
-	} catch {
+	} catch (e) {
+		console.warn(`[蒸馏] 提取失败 ${dbPath}: ${e instanceof Error ? e.message : e}`);
 		return null;
+	} finally {
+		try { db?.close(); } catch {}
 	}
 }
 
@@ -327,6 +348,7 @@ async function main() {
 
 	// 2. 加载状态
 	const state = loadState(memoryDir);
+	const processedSet = new Set(state.processedSessions);
 	const cutoffTs = Date.now() - sinceHours * 60 * 60 * 1000;
 	const effectiveCutoff = Math.max(cutoffTs, state.lastDistillTs);
 
@@ -334,23 +356,28 @@ async function main() {
 	const sessionDirs: Array<{ dir: string; sessionId: string }> = [];
 	for (const wsHash of wsHashes) {
 		const chatDir = resolve(CURSOR_CHATS_DIR, wsHash);
-		for (const d of readdirSync(chatDir)) {
-			const p = resolve(chatDir, d);
-			if (statSync(p).isDirectory() && existsSync(resolve(p, "store.db"))) {
-				sessionDirs.push({ dir: p, sessionId: d });
+		try {
+			for (const d of readdirSync(chatDir)) {
+				const p = resolve(chatDir, d);
+				try {
+					if (statSync(p).isDirectory() && existsSync(resolve(p, "store.db"))) {
+						sessionDirs.push({ dir: p, sessionId: d });
+					}
+				} catch { /* 目录被删或权限不足，跳过 */ }
 			}
-		}
+		} catch { /* chat 目录不可读，跳过 */ }
 	}
 
 	const newConversations: ExtractedConversation[] = [];
 
 	for (const { dir, sessionId } of sessionDirs) {
-		if (state.processedSessions.includes(sessionId)) continue;
+		if (processedSet.has(sessionId)) continue;
 
 		const dbPath = resolve(dir, "store.db");
-		const dbStat = statSync(dbPath);
-
-		if (dbStat.mtimeMs < effectiveCutoff) continue;
+		try {
+			const dbStat = statSync(dbPath);
+			if (dbStat.mtimeMs < effectiveCutoff) continue;
+		} catch { continue; }
 
 		const conv = extractConversation(dbPath);
 		if (conv && conv.turns.length >= 2) {
@@ -380,14 +407,9 @@ async function main() {
 	state.lastDistillTs = Date.now();
 	state.totalDistills++;
 	for (const conv of newConversations) {
-		if (!state.processedSessions.includes(conv.sessionId)) {
-			state.processedSessions.push(conv.sessionId);
-		}
+		processedSet.add(conv.sessionId);
 	}
-	// 只保留最近 200 个 session ID
-	if (state.processedSessions.length > 200) {
-		state.processedSessions = state.processedSessions.slice(-200);
-	}
+	state.processedSessions = [...processedSet].slice(-200);
 	saveState(memoryDir, state);
 
 	// 7. 输出摘要

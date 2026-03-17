@@ -33,6 +33,7 @@
 ├── memory-tool.ts         # 记忆 CLI（Cursor Agent 通过 shell 调用）
 ├── scheduler.ts           # 定时任务调度器（cron-jobs.json 驱动）
 ├── heartbeat.ts           # 心跳系统（定期触发 HEARTBEAT.md 检查）
+├── distill-chats.ts       # 对话蒸馏提取器（从 Cursor 会话中提取记忆）
 ├── sync-apple-notes.ts    # Apple Notes 同步
 ├── backfill-embeddings.ts # 向量嵌入回填工具
 ├── feishu/                # 飞书集成（17 个 .ts 文件）
@@ -67,6 +68,7 @@
 - **server.ts** — 主进程，实例化 memory.ts、scheduler.ts、heartbeat.ts，导入 feishu/ 模块
 - **memory.ts** — 被 server.ts 实例化，提供记忆读写能力
 - **memory-tool.ts** — 独立 CLI 进程，供 Cursor Agent 通过 shell 调用记忆系统
+- **distill-chats.ts** — 独立 CLI 进程，被 server.ts 定时调用，从 Cursor 对话数据库提取近期对话供 Agent 蒸馏记忆
 - **scheduler.ts** — 被 server.ts 实例化，读取 cron-jobs.json 驱动定时任务
 - **heartbeat.ts** — 被 server.ts 实例化，定期触发 HEARTBEAT.md 检查
 - **bridge.ts** — 独立服务，提供 OpenAI 兼容 API（供 OpenClaw 调用）

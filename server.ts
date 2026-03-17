@@ -273,37 +273,49 @@ const heartbeat = new HeartbeatRunner({
 
 // ── 每日对话蒸馏 ─────────────────────────────────
 
-const DISTILL_INTERVAL = 12 * 60 * 60 * 1000; // 12 小时检查一次
+const DISTILL_INTERVAL = 12 * 60 * 60 * 1000;
 const DISTILL_SCRIPT = resolve(import.meta.dirname, "distill-chats.ts");
+const DISTILL_LOOKBACK_HOURS = 26; // 约 2 个蒸馏周期 + 缓冲
+const DISTILL_TIMEOUT = 10 * 60 * 1000; // Agent 蒸馏最长 10 分钟
+const DISTILL_LOCK_KEY = "distill:background";
 
 let distillTimer: ReturnType<typeof setTimeout> | null = null;
 let lastDistillCheck = 0;
 
 async function runDistillCycle(): Promise<void> {
-	const now = new Date();
-	const hour = now.getHours();
-	if (hour < 6 || hour > 23) return; // 深夜不执行
+	const hour = new Date().getHours();
+	if (hour < 6 || hour >= 23) return;
 
 	try {
 		console.log("[蒸馏] 开始每日对话蒸馏...");
 
-		// 1. 运行提取脚本
-		const proc = Bun.spawn(["bun", DISTILL_SCRIPT, "--workspace", defaultWorkspace, "--since", "26"], {
+		const proc = spawn("bun", [DISTILL_SCRIPT, "--workspace", defaultWorkspace, "--since", String(DISTILL_LOOKBACK_HOURS)], {
 			cwd: defaultWorkspace,
-			stdout: "pipe",
-			stderr: "pipe",
+			env: process.env,
+			stdio: ["ignore", "pipe", "pipe"],
 		});
-		const stdout = await new Response(proc.stdout).text();
-		const exitCode = await proc.exited;
 
-		if (exitCode !== 0 || stdout.includes("无新对话") || stdout.includes("未找到")) {
+		let stdout = "";
+		let stderr = "";
+		proc.stdout!.on("data", (c: Buffer) => { stdout += c.toString(); });
+		proc.stderr!.on("data", (c: Buffer) => { stderr += c.toString(); });
+
+		const exitCode = await new Promise<number | null>((res) => {
+			proc.on("close", res);
+			proc.on("error", () => res(1));
+		});
+
+		if (exitCode !== 0) {
+			console.warn(`[蒸馏] 提取脚本失败 (exit=${exitCode}): ${stderr.trim().split("\n").pop() || stdout.trim().split("\n").pop() || "未知错误"}`);
+			return;
+		}
+		if (stdout.includes("无新对话") || stdout.includes("未找到")) {
 			console.log(`[蒸馏] ${stdout.trim().split("\n").pop() || "无新对话，跳过"}`);
 			return;
 		}
 
 		console.log(`[蒸馏] 提取完成: ${stdout.trim().split("\n").pop()}`);
 
-		// 2. 触发 Agent 蒸馏记忆
 		const extractPath = resolve(defaultWorkspace, ".cursor/memory/_chat-extract.md");
 		if (!existsSync(extractPath)) return;
 
@@ -328,15 +340,23 @@ async function runDistillCycle(): Promise<void> {
 		].join("\n");
 
 		memory?.appendSessionLog(defaultWorkspace, "user", "[记忆蒸馏] 自动提取对话记忆", config.CURSOR_MODEL);
-		const { result } = await runAgent(defaultWorkspace, distillPrompt);
+
+		// 使用独立会话执行蒸馏，避免污染用户的活跃对话上下文
+		const agentPromise = execAgent(DISTILL_LOCK_KEY, defaultWorkspace, config.CURSOR_MODEL, distillPrompt);
+		const timeoutPromise = new Promise<never>((_, reject) =>
+			setTimeout(() => reject(new Error("蒸馏超时")), DISTILL_TIMEOUT),
+		);
+		const { result } = await Promise.race([agentPromise, timeoutPromise]);
+
 		memory?.appendSessionLog(defaultWorkspace, "assistant", result.slice(0, 3000), config.CURSOR_MODEL);
 
 		if (/DISTILL_SKIP/i.test(result)) {
 			console.log("[蒸馏] Agent 判断无有价值信息，跳过");
 		} else {
 			console.log("[蒸馏] 记忆蒸馏完成 ✓");
-			// 蒸馏成功后清理提取文件
-			try { unlinkSync(extractPath); } catch {}
+			try { unlinkSync(extractPath); } catch (e) {
+				console.warn(`[蒸馏] 清理提取文件失败: ${e instanceof Error ? e.message : e}`);
+			}
 		}
 	} catch (err) {
 		console.warn(`[蒸馏] 错误: ${err instanceof Error ? err.message : err}`);
@@ -348,9 +368,8 @@ function scheduleDistill(): void {
 	distillTimer = setTimeout(async () => {
 		distillTimer = null;
 		lastDistillCheck = Date.now();
-		await runDistillCycle();
-		scheduleDistill();
-	}, lastDistillCheck ? DISTILL_INTERVAL : 5 * 60 * 1000); // 首次启动 5 分钟后执行
+		try { await runDistillCycle(); } finally { scheduleDistill(); }
+	}, lastDistillCheck ? DISTILL_INTERVAL : 5 * 60 * 1000);
 	distillTimer.unref();
 }
 
