@@ -7,7 +7,7 @@ LABEL="com.nonoclaw"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 BOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUN_BIN="$(which bun 2>/dev/null || echo "$HOME/.bun/bin/bun")"
-LOG_FILE="/tmp/feishu-cursor.log"
+LOG_FILE="/tmp/nonoclaw.log"
 
 generate_plist() {
     cat > "$PLIST" <<PEOF
