@@ -271,6 +271,92 @@ const heartbeat = new HeartbeatRunner({
 	log: (msg: string) => console.log(`[心跳] ${msg}`),
 });
 
+// ── 每日对话蒸馏 ─────────────────────────────────
+
+const DISTILL_INTERVAL = 12 * 60 * 60 * 1000; // 12 小时检查一次
+const DISTILL_SCRIPT = resolve(import.meta.dirname, "distill-chats.ts");
+
+let distillTimer: ReturnType<typeof setTimeout> | null = null;
+let lastDistillCheck = 0;
+
+async function runDistillCycle(): Promise<void> {
+	const now = new Date();
+	const hour = now.getHours();
+	if (hour < 6 || hour > 23) return; // 深夜不执行
+
+	try {
+		console.log("[蒸馏] 开始每日对话蒸馏...");
+
+		// 1. 运行提取脚本
+		const proc = Bun.spawn(["bun", DISTILL_SCRIPT, "--workspace", defaultWorkspace, "--since", "26"], {
+			cwd: defaultWorkspace,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const stdout = await new Response(proc.stdout).text();
+		const exitCode = await proc.exited;
+
+		if (exitCode !== 0 || stdout.includes("无新对话") || stdout.includes("未找到")) {
+			console.log(`[蒸馏] ${stdout.trim().split("\n").pop() || "无新对话，跳过"}`);
+			return;
+		}
+
+		console.log(`[蒸馏] 提取完成: ${stdout.trim().split("\n").pop()}`);
+
+		// 2. 触发 Agent 蒸馏记忆
+		const extractPath = resolve(defaultWorkspace, ".cursor/memory/_chat-extract.md");
+		if (!existsSync(extractPath)) return;
+
+		const distillPrompt = [
+			"[记忆蒸馏] 请阅读 .cursor/memory/_chat-extract.md，这是从 Cursor 对话记录中自动提取的近期对话内容。",
+			"",
+			"请从中提炼以下信息，追加到 .cursor/MEMORY.md（如果文件不存在则创建）：",
+			"",
+			"1. **工作习惯** — 用户反复使用的工作方式、偏好的沟通风格、常用命令",
+			"2. **编码偏好** — 技术选型倾向、代码风格偏好、常用工具和模式",
+			"3. **重要决策** — 做出的关键技术/产品决策及其理由",
+			"4. **教训** — 出错后的调整、踩过的坑、需要记住的注意事项",
+			"5. **团队习惯** — 如果发现编码规范、提交规范等团队约定，同步更新 文档/团队习惯.md",
+			"",
+			"写入格式要求：",
+			"- 用 ### 标题分类，每条带日期标签",
+			"- 只写有价值的新发现，不重复已有记忆",
+			"- 保持精炼，每条 1-3 句话",
+			"- 写完后在 .cursor/memory/ 今天的日记中记录本次蒸馏摘要",
+			"",
+			"如果对话内容太少或没有有价值的信息，直接回复 DISTILL_SKIP。",
+		].join("\n");
+
+		memory?.appendSessionLog(defaultWorkspace, "user", "[记忆蒸馏] 自动提取对话记忆", config.CURSOR_MODEL);
+		const { result } = await runAgent(defaultWorkspace, distillPrompt);
+		memory?.appendSessionLog(defaultWorkspace, "assistant", result.slice(0, 3000), config.CURSOR_MODEL);
+
+		if (/DISTILL_SKIP/i.test(result)) {
+			console.log("[蒸馏] Agent 判断无有价值信息，跳过");
+		} else {
+			console.log("[蒸馏] 记忆蒸馏完成 ✓");
+			// 蒸馏成功后清理提取文件
+			try { unlinkSync(extractPath); } catch {}
+		}
+	} catch (err) {
+		console.warn(`[蒸馏] 错误: ${err instanceof Error ? err.message : err}`);
+	}
+}
+
+function scheduleDistill(): void {
+	if (distillTimer) clearTimeout(distillTimer);
+	distillTimer = setTimeout(async () => {
+		distillTimer = null;
+		lastDistillCheck = Date.now();
+		await runDistillCycle();
+		scheduleDistill();
+	}, lastDistillCheck ? DISTILL_INTERVAL : 5 * 60 * 1000); // 首次启动 5 分钟后执行
+	distillTimer.unref();
+}
+
+scheduleDistill();
+console.log(`[蒸馏] 已启动每日对话蒸馏（每 ${DISTILL_INTERVAL / 3600000}h 检查）`);
+
 // ── 飞书 Client ──────────────────────────────────
 const larkClient = new Lark.Client({
 	appId: config.FEISHU_APP_ID,

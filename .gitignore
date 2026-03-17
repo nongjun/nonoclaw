@@ -44,3 +44,5 @@ bun.lock
 .memory.sqlite
 .memory.sqlite-wal
 .memory.sqlite-shm
+.cursor/memory/
+.cursor/sessions/
