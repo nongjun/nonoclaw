@@ -24,8 +24,8 @@ import { HeartbeatRunner } from "./heartbeat.js";
 const HOME = process.env.HOME;
 if (!HOME) throw new Error("$HOME is not set");
 
-const ROOT = resolve(import.meta.dirname, "..");
-const ENV_PATH = resolve(import.meta.dirname, ".env");
+const ROOT = import.meta.dirname;
+const ENV_PATH = resolve(ROOT, ".env");
 const PROJECTS_PATH = resolve(ROOT, "projects.json");
 const AGENT_BIN = process.env.AGENT_BIN || resolve(HOME, ".local/bin/agent");
 const INBOX_DIR = resolve(ROOT, "inbox");
