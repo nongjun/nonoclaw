@@ -1,9 +1,9 @@
 #!/bin/bash
-# feishu-cursor-claw 服务管理脚本
+# nonoclaw 服务管理脚本
 # 用法: bash service.sh [install|uninstall|start|stop|restart|status|logs]
 set -e
 
-LABEL="com.feishu-cursor-claw"
+LABEL="com.nonoclaw"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 BOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUN_BIN="$(which bun 2>/dev/null || echo "$HOME/.bun/bin/bun")"
@@ -126,7 +126,7 @@ case "${1:-}" in
     status)    cmd_status ;;
     logs)      cmd_logs ;;
     *)
-        echo "feishu-cursor-claw 服务管理"
+        echo "nonoclaw 服务管理"
         echo ""
         echo "用法: bash service.sh <命令>"
         echo ""

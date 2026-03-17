@@ -1,4 +1,4 @@
-# feishu-cursor-claw
+# nonoclaw
 
 > Turn Feishu/Lark into a remote control for Cursor AI — text, voice, and images to code changes (and beyond).
 
@@ -69,8 +69,8 @@ Phone (Feishu) ──WebSocket──→ feishu-cursor ──Cursor CLI──→ 
 ### 2. Install & Configure
 
 ```bash
-git clone https://github.com/nongjun/feishu-cursor-claw.git
-cd feishu-cursor-claw
+git clone https://github.com/nongjun/nonoclaw.git
+cd nonoclaw
 bun install
 
 cp .env.example .env
@@ -310,8 +310,8 @@ Phase 3: Platform
 ### 安装
 
 ```bash
-git clone https://github.com/nongjun/feishu-cursor-claw.git
-cd feishu-cursor-claw
+git clone https://github.com/nongjun/nonoclaw.git
+cd nonoclaw
 bun install
 cp .env.example .env
 # 编辑 .env 填入你的凭据
