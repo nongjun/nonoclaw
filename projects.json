@@ -1,0 +1,9 @@
+{
+  "projects": {
+    "root": {
+      "path": "/root",
+      "description": "默认工作区"
+    }
+  },
+  "default_project": "root"
+}
