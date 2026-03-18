@@ -12,19 +12,19 @@ alwaysApply: true
 
 ```bash
 # 语义搜索（向量+关键词混合，返回最相关的片段）
-bun ~/Documents/Ai管理的文件夹/relay-bot/memory-tool.ts search "关键词或问题"
+bun memory-tool.ts search "关键词或问题"
 
 # 查看最近记忆摘要
-bun ~/Documents/Ai管理的文件夹/relay-bot/memory-tool.ts recent --days 3
+bun memory-tool.ts recent --days 3
 
 # 写入今日日记
-bun ~/Documents/Ai管理的文件夹/relay-bot/memory-tool.ts write "要记录的内容"
+bun memory-tool.ts write "要记录的内容"
 
 # 查看索引统计（已索引哪些文件）
-bun ~/Documents/Ai管理的文件夹/relay-bot/memory-tool.ts stats
+bun memory-tool.ts stats
 
 # 重建全工作区索引
-bun ~/Documents/Ai管理的文件夹/relay-bot/memory-tool.ts index
+bun memory-tool.ts index
 ```
 
 ## 记忆召回协议（必须遵守）
