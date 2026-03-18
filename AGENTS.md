@@ -177,8 +177,11 @@ AI 拥有 HEARTBEAT.md 完全编辑权，清单过时时自主更新。
 | 身份系统 | `user-context.mdc`, `workspace-rules.mdc` |
 | 工具能力 | `tools.mdc`, `cursor-capabilities.mdc` |
 | Bun 规范 | `use-bun-instead-of-node-vite-npm-pnpm.mdc` |
+| 产品架构 | `文档/设计文档/龙虾军团-产品架构设计.md` |
+| 工作区模板 | `templates/` 目录 |
 
 合并外部更新、git pull、重构清理时，必须验证上述文件完整。
+龙虾军团产品架构设计文档的修改必须事先获得农总（农俊）同意。
 
 ---
 
