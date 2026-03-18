@@ -1,4 +1,4 @@
-# AGENTS.md — nonoclaw（虾群平台版）
+# AGENTS.md — nonoclaw（龙虾军团）
 
 > 本文件是 AI 编码助手理解本项目的入口。信息矛盾时以 `文档/` 目录为准。
 
