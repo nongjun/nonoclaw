@@ -21,6 +21,10 @@ import { MemoryManager } from "./memory.js";
 import { Scheduler, type CronJob } from "./scheduler.js";
 import { HeartbeatRunner } from "./heartbeat.js";
 
+const GATEWAY_URL = process.env.GATEWAY_URL;
+const IS_WORKER = !!GATEWAY_URL;
+const WORKER_PORT = parseInt(process.env.WORKER_PORT || "18801");
+
 const HOME = process.env.HOME;
 if (!HOME) throw new Error("$HOME is not set");
 
@@ -377,7 +381,7 @@ scheduleDistill();
 console.log(`[蒸馏] 已启动每日对话蒸馏（每 ${DISTILL_INTERVAL / 3600000}h 检查）`);
 
 // ── 飞书 Client ──────────────────────────────────
-const larkClient = new Lark.Client({
+const larkClient = IS_WORKER ? null : new Lark.Client({
 	appId: config.FEISHU_APP_ID,
 	appSecret: config.FEISHU_APP_SECRET,
 	domain: Lark.Domain.Feishu,
@@ -422,8 +426,21 @@ async function replyCard(
 	markdown: string,
 	header?: { title?: string; color?: string },
 ): Promise<string | undefined> {
+	if (IS_WORKER) {
+		try {
+			const res = await fetch(`${GATEWAY_URL}/feishu/reply`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ messageId, markdown, header }),
+			});
+			return (await res.json() as any).messageId;
+		} catch (e) {
+			console.error("[Worker→Gateway] replyCard failed:", e);
+		}
+		return undefined;
+	}
 	try {
-		const res = await larkClient.im.message.reply({
+		const res = await larkClient!.im.message.reply({
 			path: { message_id: messageId },
 			data: { content: buildCard(markdown, header), msg_type: "interactive" },
 		});
@@ -431,7 +448,7 @@ async function replyCard(
 	} catch (err) {
 		console.error("[回复卡片失败]", err);
 		try {
-			const res = await larkClient.im.message.reply({
+			const res = await larkClient!.im.message.reply({
 				path: { message_id: messageId },
 				data: { content: JSON.stringify({ text: markdown }), msg_type: "text" },
 			});
@@ -445,8 +462,21 @@ async function updateCard(
 	markdown: string,
 	header?: { title?: string; color?: string },
 ): Promise<{ ok: boolean; error?: string }> {
+	if (IS_WORKER) {
+		try {
+			const res = await fetch(`${GATEWAY_URL}/feishu/update`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ messageId, markdown, header }),
+			});
+			return await res.json() as { ok: boolean; error?: string };
+		} catch (e) {
+			console.error("[Worker→Gateway] updateCard failed:", e);
+			return { ok: false, error: String(e) };
+		}
+	}
 	try {
-		await larkClient.im.message.patch({
+		await larkClient!.im.message.patch({
 			path: { message_id: messageId },
 			data: { content: buildCard(markdown, header) },
 		});
@@ -463,8 +493,21 @@ async function sendCard(
 	markdown: string,
 	header?: { title?: string; color?: string },
 ): Promise<string | undefined> {
+	if (IS_WORKER) {
+		try {
+			const res = await fetch(`${GATEWAY_URL}/feishu/send`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ chatId, markdown, header }),
+			});
+			return (await res.json() as any).messageId;
+		} catch (e) {
+			console.error("[Worker→Gateway] sendCard failed:", e);
+		}
+		return undefined;
+	}
 	try {
-		const res = await larkClient.im.message.create({
+		const res = await larkClient!.im.message.create({
 			params: { receive_id_type: "chat_id" },
 			data: { receive_id: chatId, msg_type: "interactive", content: buildCard(markdown, header) },
 		});
@@ -474,30 +517,52 @@ async function sendCard(
 	}
 }
 
-// 长消息分片发送
+// 长消息分片
 const CARD_MAX = 3800;
-async function replyLongMessage(messageId: string, chatId: string, text: string, header?: { title?: string; color?: string }): Promise<void> {
-	if (text.length <= CARD_MAX) {
-		await replyCard(messageId, text, header);
-		return;
-	}
+
+function splitLongText(text: string): string[] {
+	if (text.length <= CARD_MAX) return [text];
 	const chunks: string[] = [];
 	let remaining = text;
 	while (remaining.length > 0) {
-		if (remaining.length <= CARD_MAX) {
-			chunks.push(remaining);
-			break;
-		}
+		if (remaining.length <= CARD_MAX) { chunks.push(remaining); break; }
 		let cut = remaining.lastIndexOf("\n", CARD_MAX);
 		if (cut < CARD_MAX * 0.5) cut = CARD_MAX;
 		chunks.push(remaining.slice(0, cut));
 		remaining = remaining.slice(cut);
 	}
+	return chunks;
+}
+
+async function replyLongMessage(messageId: string, chatId: string, text: string, header?: { title?: string; color?: string }): Promise<void> {
+	const chunks = splitLongText(text);
 	for (let i = 0; i < chunks.length; i++) {
 		const h = chunks.length > 1 ? { title: `${header?.title || "回复"} (${i + 1}/${chunks.length})`, color: header?.color } : header;
 		if (i === 0) await replyCard(messageId, chunks[i], h);
 		else await sendCard(chatId, chunks[i], h);
 	}
+}
+
+// 复用已有卡片承载第一段内容，后续分片另发新消息（避免多出一条"结果见下方"）
+async function updateCardLong(
+	cardId: string,
+	chatId: string,
+	text: string,
+	header?: { title?: string; color?: string },
+): Promise<boolean> {
+	const chunks = splitLongText(text);
+	for (let i = 0; i < chunks.length; i++) {
+		const h = chunks.length > 1
+			? { title: `${header?.title || "回复"} (${i + 1}/${chunks.length})`, color: header?.color || "green" }
+			: header;
+		if (i === 0) {
+			const { ok } = await updateCard(cardId, chunks[i], h);
+			if (!ok) return false;
+		} else {
+			await sendCard(chatId, chunks[i], h);
+		}
+	}
+	return true;
 }
 
 // ── 媒体下载 ─────────────────────────────────────
@@ -529,7 +594,20 @@ async function downloadMedia(
 	type: "image" | "file",
 	ext: string,
 ): Promise<string> {
-	const response = await larkClient.im.messageResource.get({
+	if (IS_WORKER) {
+		try {
+			const res = await fetch(`${GATEWAY_URL}/feishu/download`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ messageId, fileKey, type, ext }),
+			});
+			return (await res.json() as any).path;
+		} catch (e) {
+			console.error("[Worker→Gateway] downloadMedia failed:", e);
+			throw e;
+		}
+	}
+	const response = await larkClient!.im.messageResource.get({
 		path: { message_id: messageId, file_key: fileKey },
 		params: { type },
 	});
@@ -1240,7 +1318,8 @@ function execAgent(
 		let thinkingBuf = "";
 		let assistantBuf = "";
 		let lastSegment = "";
-		let toolBuf = ""; // 工具活动日志（显示在进度卡片中）
+		let assistantEventCount = 0;
+		let toolBuf = "";
 		let done = false;
 		const startTime = Date.now();
 		let lastProgressTime = 0;
@@ -1290,18 +1369,19 @@ function execAgent(
 					phase = "thinking";
 					if (ev.text) thinkingBuf += ev.text;
 					break;
-				case "assistant":
-					if (phase !== "responding") toolBuf = "";
-					phase = "responding";
-					if (ev.message?.content) {
-						for (const c of ev.message.content) {
-							if (c.type === "text" && c.text) {
-								assistantBuf += c.text;
-								lastSegment += c.text;
-							}
+			case "assistant":
+				if (phase !== "responding") { toolBuf = ""; lastSegment = ""; }
+				phase = "responding";
+				assistantEventCount++;
+				if (ev.message?.content) {
+					for (const c of ev.message.content) {
+						if (c.type === "text" && c.text) {
+							assistantBuf += c.text;
+							lastSegment += c.text;
 						}
 					}
-					break;
+				}
+				break;
 				case "tool_call":
 					phase = "tool_call";
 					lastSegment = "";
@@ -1353,12 +1433,13 @@ function execAgent(
 		child.on("close", (code) => {
 			if (done) return;
 			cleanup();
-			// 处理 lineBuf 中残留的最后一行
 			if (lineBuf.trim()) processLine(lineBuf);
 
-			// 优先取最后一段 assistant 回复（最终结果），避免输出中间过程
 			const finalSegment = strip(lastSegment);
-			const output = finalSegment || resultText || strip(assistantBuf) || strip(stderr) || "(无输出)";
+			// resultText（CLI 权威输出）优先；仅在 CLI 未提供 result 时回退到累积文本
+			const output = resultText || finalSegment || strip(assistantBuf) || strip(stderr) || "(无输出)";
+
+			console.log(`[Agent输出] resultText=${resultText.length}c finalSegment=${finalSegment.length}c assistantBuf=${assistantBuf.length}c events=${assistantEventCount}`);
 
 			if (code !== 0 && code !== null && !resultText) {
 				reject(new Error(strip(stderr) || output));
@@ -1586,6 +1667,7 @@ async function handleInner(
 			`- ${c("/状态", "/status")} — 查看服务状态`,
 			`- ${c("/新对话", "/new")} — 重置当前会话`,
 			`- ${c("/终止", "/stop")} — 终止正在执行的任务`,
+			`- ${c("/重启", "/restart")} — 热重启业务进程（不断飞书连接）`,
 			"",
 			"**会话管理**",
 			`- ${c("/会话", "/sessions")} — 查看最近会话列表`,
@@ -1641,6 +1723,7 @@ async function handleInner(
 			})()
 			: "未启用";
 		const statusText = [
+			`**模式：** ${IS_WORKER ? "Gateway + Worker" : "独立模式"}`,
 			`**模型：** ${config.CURSOR_MODEL}`,
 			`**Key：** ${keyPreview}`,
 			`**STT：** ${sttStatus}`,
@@ -1725,6 +1808,19 @@ async function handleInner(
 		} else {
 			await replyCard(messageId, "当前没有正在运行的任务。", { title: "无任务", color: "grey" });
 		}
+		return;
+	}
+
+	// /重启、/restart → 重启 Worker（仅 Worker 模式有效）
+	if (/^\/(重启|restart|reload)\s*$/i.test(text.trim())) {
+		if (!IS_WORKER) {
+			await replyCard(messageId, "当前为独立模式，不支持热重启。请手动重启服务。", { title: "不支持", color: "orange" });
+			return;
+		}
+		await replyCard(messageId, "正在重启 Worker...", { title: "🔄 重启中", color: "wathet" });
+		try {
+			await fetch(`${GATEWAY_URL}/worker/restart`, { method: "POST" });
+		} catch {}
 		return;
 	}
 
@@ -2108,20 +2204,19 @@ async function handleInner(
 		const doneTitle = quotaWarning ? `完成 · ${elapsed}` : `完成 · ${elapsed}`;
 		const doneColor = quotaWarning ? "orange" : "green";
 
-		// 尝试发送 AI 结果到飞书卡片
+		// 尝试发送 AI 结果到飞书卡片（复用已有卡片，避免多条消息）
 		let sendOk = false;
-		if (cardId && fullResult.length <= CARD_MAX) {
-			const { ok, error } = await updateCard(cardId, fullResult, { title: doneTitle, color: doneColor });
+		if (cardId) {
+			const ok = await updateCardLong(cardId, chatId, fullResult, { title: doneTitle, color: doneColor });
 			if (ok) {
 				sendOk = true;
 			} else {
-				// 卡片更新失败 → 让大模型知道，自己重新组织回复
-				console.log(`[重发] 卡片更新失败: ${error}，通知 AI 重新回复`);
+				// 卡片更新失败（通常是表格过多等渲染问题）→ 让大模型重新组织回复
+				console.log(`[重发] 卡片更新失败，通知 AI 重新回复`);
 				await updateCard(cardId, `⏳ 回复格式超出飞书限制，正在重新组织...`, { title: "重新组织中", color: "wathet" });
 
 				const retryPrompt = [
 					"你的上一条回复发送到飞书时失败了。",
-					`失败原因：${error}`,
 					"",
 					"飞书卡片的限制：",
 					"- 单张卡片最多 5 个 Markdown 表格（这是最常见的失败原因）",
@@ -2137,12 +2232,12 @@ async function handleInner(
 				try {
 					const { result: retryResult } = await runAgent(workspace, retryPrompt, { onProgress });
 					const retryElapsed = formatElapsed(Math.round((Date.now() - taskStart) / 1000));
-					const { ok: retryOk } = await updateCard(cardId, retryResult, { title: `完成 · ${retryElapsed}`, color: doneColor });
+					const retryOk = await updateCardLong(cardId, chatId, retryResult, { title: `完成 · ${retryElapsed}`, color: doneColor });
 					if (retryOk) {
 						sendOk = true;
 						console.log(`[重发] AI 重新回复成功 (${retryResult.length} chars)`);
 					} else {
-						console.warn("[重发] AI 重新回复后仍然超限，回退纯文本分片");
+						console.warn("[重发] AI 重新回复后仍然超限，回退新消息分片");
 					}
 				} catch (retryErr) {
 					console.error("[重发] AI 重试失败:", retryErr);
@@ -2150,11 +2245,8 @@ async function handleInner(
 			}
 		}
 
-		// 卡片发送失败或内容过长 → 回退分片发送
+		// 所有卡片更新方式均失败 → 回退为新消息分片
 		if (!sendOk) {
-			if (cardId) {
-				await updateCard(cardId, quotaWarning || "执行完成，结果见下方", { title: doneTitle, color: doneColor });
-			}
 			await replyLongMessage(messageId, chatId, result, { title: doneTitle, color: "green" });
 		}
 	} catch (err) {
@@ -2176,55 +2268,57 @@ async function handleInner(
 	}
 }
 
-// ── 飞书长连接 ───────────────────────────────────
-const dispatcher = new Lark.EventDispatcher({});
-const TYPES = new Set(["text", "image", "audio", "file", "post"]);
-
-dispatcher.register({
-	"im.message.receive_v1": async (data) => {
-		console.log("[事件] 收到 im.message.receive_v1");
-		try {
-			const ev = data as Record<string, unknown>;
-			const msg = ev.message as Record<string, unknown>;
-			if (!msg) {
-				console.error("[事件] msg 为空");
-				return;
-			}
-			const messageType = msg.message_type as string;
-			const messageId = msg.message_id as string;
-			const chatId = msg.chat_id as string;
-			const chatType = (msg.chat_type as string) || "p2p";
-			const content = msg.content as string;
-
-			if (isDup(messageId)) return;
-			if (!TYPES.has(messageType)) {
-				await replyCard(messageId, `暂不支持: ${messageType}`);
-				return;
-			}
-
-			const { text: parsedText, imageKey, fileKey } = parseContent(messageType, content);
-			console.log(`[解析] type=${messageType} chat=${chatType} text="${parsedText.slice(0, 60)}" img=${imageKey ?? ""} file=${fileKey ?? ""}`);
-			handle({ text: parsedText.trim(), messageId, chatId, chatType, messageType, content }).catch(console.error);
-		} catch (e) {
-			console.error("[事件异常]", e);
-		}
-	},
-});
-
-const ws = new Lark.WSClient({
-	appId: config.FEISHU_APP_ID,
-	appSecret: config.FEISHU_APP_SECRET,
-	domain: Lark.Domain.Feishu,
-	loggerLevel: Lark.LoggerLevel.info,
-});
-
 // ── 启动 ─────────────────────────────────────────
 const list = Object.entries(projectsConfig.projects)
 	.map(([k, v]) => `  ${k} → ${v.path}`)
 	.join("\n");
 const sttEngine = config.VOLC_STT_APP_ID ? "火山引擎豆包大模型" : "本地 whisper";
 const memEngine = memory ? `豆包 Embedding (${config.VOLC_EMBEDDING_MODEL})` : "未启用";
-console.log(`
+
+if (!IS_WORKER) {
+	// ── 飞书长连接 ───────────────────────────────────
+	const dispatcher = new Lark.EventDispatcher({});
+	const TYPES = new Set(["text", "image", "audio", "file", "post"]);
+
+	dispatcher.register({
+		"im.message.receive_v1": async (data) => {
+			console.log("[事件] 收到 im.message.receive_v1");
+			try {
+				const ev = data as Record<string, unknown>;
+				const msg = ev.message as Record<string, unknown>;
+				if (!msg) {
+					console.error("[事件] msg 为空");
+					return;
+				}
+				const messageType = msg.message_type as string;
+				const messageId = msg.message_id as string;
+				const chatId = msg.chat_id as string;
+				const chatType = (msg.chat_type as string) || "p2p";
+				const content = msg.content as string;
+
+				if (isDup(messageId)) return;
+				if (!TYPES.has(messageType)) {
+					await replyCard(messageId, `暂不支持: ${messageType}`);
+					return;
+				}
+
+				const { text: parsedText, imageKey, fileKey } = parseContent(messageType, content);
+				console.log(`[解析] type=${messageType} chat=${chatType} text="${parsedText.slice(0, 60)}" img=${imageKey ?? ""} file=${fileKey ?? ""}`);
+				handle({ text: parsedText.trim(), messageId, chatId, chatType, messageType, content }).catch(console.error);
+			} catch (e) {
+				console.error("[事件异常]", e);
+			}
+		},
+	});
+
+	const ws = new Lark.WSClient({
+		appId: config.FEISHU_APP_ID,
+		appSecret: config.FEISHU_APP_SECRET,
+		domain: Lark.Domain.Feishu,
+		loggerLevel: Lark.LoggerLevel.info,
+	});
+
+	console.log(`
 ┌──────────────────────────────────────────────────┐
 │  飞书 → Cursor Agent 中继服务 v5                 │
 │  架构: OpenClaw 风格 (rules 自动加载)            │
@@ -2256,33 +2350,104 @@ ${list}
 └──────────────────────────────────────────────────┘
 `);
 
-// 启动定时任务调度器
-scheduler.start().catch((e) => console.warn(`[调度] 启动失败: ${e}`));
+	scheduler.start().catch((e) => console.warn(`[调度] 启动失败: ${e}`));
+	heartbeat.start();
+	ws.start({ eventDispatcher: dispatcher });
+	console.log("飞书长连接已启动，等待消息...");
 
-heartbeat.start();
-
-ws.start({ eventDispatcher: dispatcher });
-console.log("飞书长连接已启动，等待消息...");
-
-// ── 启动自检（.cursor/BOOT.md）───────────────────────
-setTimeout(async () => {
-	const bootPath = resolve(defaultWorkspace, ".cursor/BOOT.md");
-	try {
-		if (!existsSync(bootPath)) return;
-		const content = readFileSync(bootPath, "utf-8").trim();
-		if (!content) return;
-		console.log("[启动] 检测到 .cursor/BOOT.md，执行启动自检...");
-		const bootPrompt = [
-			"你正在执行启动自检。严格按 .cursor/BOOT.md 指示操作。",
-			"如果无事可做，不需要回复任何内容。",
-		].join("\n");
-		const { result } = await runAgent(defaultWorkspace, bootPrompt);
-		const trimmed = result.trim();
-		if (trimmed && !/^(无输出|HEARTBEAT_OK)$/i.test(trimmed) && lastActiveChatId) {
-			await sendCard(lastActiveChatId, trimmed, { title: "🚀 启动自检", color: "wathet" });
+	// ── 启动自检（.cursor/BOOT.md）───────────────────────
+	setTimeout(async () => {
+		const bootPath = resolve(defaultWorkspace, ".cursor/BOOT.md");
+		try {
+			if (!existsSync(bootPath)) return;
+			const content = readFileSync(bootPath, "utf-8").trim();
+			if (!content) return;
+			console.log("[启动] 检测到 .cursor/BOOT.md，执行启动自检...");
+			const bootPrompt = [
+				"你正在执行启动自检。严格按 .cursor/BOOT.md 指示操作。",
+				"如果无事可做，不需要回复任何内容。",
+			].join("\n");
+			const { result } = await runAgent(defaultWorkspace, bootPrompt);
+			const trimmed = result.trim();
+			if (trimmed && !/^(无输出|HEARTBEAT_OK)$/i.test(trimmed) && lastActiveChatId) {
+				await sendCard(lastActiveChatId, trimmed, { title: "🚀 启动自检", color: "wathet" });
+			}
+			console.log("[启动] .cursor/BOOT.md 自检完成");
+		} catch (e) {
+			console.warn(`[启动] .cursor/BOOT.md 执行失败: ${e}`);
 		}
-		console.log("[启动] .cursor/BOOT.md 自检完成");
-	} catch (e) {
-		console.warn(`[启动] .cursor/BOOT.md 执行失败: ${e}`);
-	}
-}, 8000);
+	}, 8000);
+}
+
+if (IS_WORKER) {
+	// ── Worker 模式 HTTP 服务 ─────────────────────
+	const workerServer = Bun.serve({
+		port: WORKER_PORT,
+		async fetch(req) {
+			const url = new URL(req.url);
+			if (req.method === "POST" && url.pathname === "/message") {
+				const body = await req.json() as {
+					text: string; messageId: string; chatId: string;
+					chatType: string; messageType: string; content: string;
+				};
+				handle(body).catch(console.error);
+				return new Response(null, { status: 202 });
+			}
+			if (url.pathname === "/health") {
+				return Response.json({ status: "ok" });
+			}
+			return new Response("Not Found", { status: 404 });
+		},
+	});
+
+	console.log(`
+┌──────────────────────────────────────────────────┐
+│  飞书 → Cursor Agent 中继服务 v5 [Worker]        │
+│  架构: Gateway + Worker                          │
+├──────────────────────────────────────────────────┤
+│  模型: ${config.CURSOR_MODEL}
+│  Key:  ...${config.CURSOR_API_KEY.slice(-8)}
+│  Gateway: ${GATEWAY_URL}
+│  Worker:  http://localhost:${WORKER_PORT}
+│  收件: ${INBOX_DIR}
+│  语音: ${sttEngine}
+│  记忆: ${memEngine}
+│  调度: cron-jobs.json (文件监听)
+│  心跳: 默认关闭（飞书 /心跳 开启）
+│  自检: .cursor/BOOT.md（每次启动执行）
+│
+│  项目路由:
+${list}
+│
+│  热更换: 编辑 .env 即可
+└──────────────────────────────────────────────────┘
+`);
+
+	scheduler.start().catch((e) => console.warn(`[调度] 启动失败: ${e}`));
+	heartbeat.start();
+
+	console.log(`[Worker] HTTP 服务已启动 port=${WORKER_PORT}`);
+
+	// Worker 模式也执行启动自检
+	setTimeout(async () => {
+		const bootPath = resolve(defaultWorkspace, ".cursor/BOOT.md");
+		try {
+			if (!existsSync(bootPath)) return;
+			const content = readFileSync(bootPath, "utf-8").trim();
+			if (!content) return;
+			console.log("[启动] 检测到 .cursor/BOOT.md，执行启动自检...");
+			const bootPrompt = [
+				"你正在执行启动自检。严格按 .cursor/BOOT.md 指示操作。",
+				"如果无事可做，不需要回复任何内容。",
+			].join("\n");
+			const { result } = await runAgent(defaultWorkspace, bootPrompt);
+			const trimmed = result.trim();
+			if (trimmed && !/^(无输出|HEARTBEAT_OK)$/i.test(trimmed) && lastActiveChatId) {
+				await sendCard(lastActiveChatId, trimmed, { title: "🚀 启动自检", color: "wathet" });
+			}
+			console.log("[启动] .cursor/BOOT.md 自检完成");
+		} catch (e) {
+			console.warn(`[启动] .cursor/BOOT.md 执行失败: ${e}`);
+		}
+	}, 5000);
+}
