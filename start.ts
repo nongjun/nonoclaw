@@ -20,4 +20,4 @@ if (!existsSync(marker)) {
   }
 }
 
-await import("./server.ts");
+await import("./gateway.ts");

@@ -34,7 +34,16 @@ Thumbs.db
 .vscode/
 
 # media inbox (runtime data)
-../inbox/
+inbox/
+
+# local / cache (do not commit)
+.bun/
+.ssh/
+.config/
+.local/
+.cursor-server/
+.bashrc
+.profile
 
 # lock file (bun auto-generates)
 bun.lock
@@ -46,3 +55,4 @@ bun.lock
 .memory.sqlite-shm
 .cursor/memory/
 .cursor/sessions/
+.cursor/projects/
