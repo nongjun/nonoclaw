@@ -163,6 +163,25 @@ AI 拥有 HEARTBEAT.md 完全编辑权，清单过时时自主更新。
 
 运行环境 macOS / Linux · 服务管理 `bash service.sh install/start/stop/restart/logs` · 启动 `bun run server.ts` · inbox/ 自动清理 24h 前临时文件 · 凭据见 [文档/凭据与配置/](文档/凭据与配置/)
 
+## 核心体系保护名录
+
+以下体系构成本项目的核心竞争力，**任何情况下不得删除、清空或覆盖**：
+
+| 体系 | 受保护文件 |
+|------|-----------|
+| 记忆闭环 | `memory-protocol.mdc`, `.cursor/MEMORY.md`, `.cursor/memory/` |
+| 心跳闭环 | `heartbeat-protocol.mdc`, `.cursor/HEARTBEAT.md` |
+| 蒸馏闭环 | `distill-chats.ts`, server.ts 蒸馏调度逻辑 |
+| 调度闭环 | `scheduler-protocol.mdc`, `cron-jobs.json` |
+| 会话协议 | `soul.mdc`, `agent-identity.mdc`, `.cursor/BOOTSTRAP.md` |
+| 身份系统 | `user-context.mdc`, `workspace-rules.mdc` |
+| 工具能力 | `tools.mdc`, `cursor-capabilities.mdc` |
+| Bun 规范 | `use-bun-instead-of-node-vite-npm-pnpm.mdc` |
+
+合并外部更新、git pull、重构清理时，必须验证上述文件完整。
+
+---
+
 ## 修改代码前必读
 
 1. 先读 [架构.md](架构.md) 了解全貌，查 `文档/设计文档/` 和 `文档/质量评分/`
