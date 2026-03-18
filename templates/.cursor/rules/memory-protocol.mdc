@@ -6,26 +6,19 @@ alwaysApply: true
 
 # 记忆系统
 
-你拥有一个向量记忆系统，覆盖工作区全部文本文件。通过 shell 调用 `memory-tool.ts` 使用。
+你拥有文件级记忆系统。如果工作区配置了向量记忆工具（memory-tool），还可进行语义搜索。
 
-## 记忆工具
+## 记忆工具（如已部署）
 
-```bash
-# 语义搜索（向量+关键词混合，返回最相关的片段）
-bun memory-tool.ts search "关键词或问题"
+如果工作区有 `memory-tool.ts`，可通过 shell 调用：
 
-# 查看最近记忆摘要
-bun memory-tool.ts recent --days 3
+- 语义搜索：`bun memory-tool.ts search "关键词或问题"`
+- 最近摘要：`bun memory-tool.ts recent --days 3`
+- 写入日记：`bun memory-tool.ts write "要记录的内容"`
+- 索引统计：`bun memory-tool.ts stats`
+- 重建索引：`bun memory-tool.ts index`
 
-# 写入今日日记
-bun memory-tool.ts write "要记录的内容"
-
-# 查看索引统计（已索引哪些文件）
-bun memory-tool.ts stats
-
-# 重建全工作区索引
-bun memory-tool.ts index
-```
+没有 memory-tool 时，直接读写 `.cursor/MEMORY.md` 和 `.cursor/memory/*.md` 文件。
 
 ## 记忆召回协议（必须遵守）
 
@@ -38,7 +31,7 @@ bun memory-tool.ts index
 - 待办事项、开放性问题
 
 **搜索流程：**
-1. 用 `search` 命令搜索 `.cursor/MEMORY.md` + `.cursor/memory/*.md`
+1. 用记忆工具或直接读取 `.cursor/MEMORY.md` + `.cursor/memory/*.md`
 2. 根据搜索结果回答问题
 3. 如果搜索后仍然没有信心，告诉用户"我查过记忆了但没找到"
 4. 引用来源时附上 `来源: <文件名>` 帮助用户验证
@@ -50,11 +43,10 @@ bun memory-tool.ts index
 - `.cursor/MEMORY.md` — 长期记忆（精华、偏好、重要决策）
 - `.cursor/memory/YYYY-MM-DD.md` — 每日日记（原始记录）
 - `.cursor/sessions/` — 会话转录日志（只读参考）
-- 工作区其他所有文本文件也已被索引，`search` 可以搜到
 
 ## 记忆写入
 
-除了用 `write` 命令写入日记，你也可以直接编辑文件：
+你可以直接编辑文件：
 - 决策、偏好、持久事实 → 写入 `.cursor/MEMORY.md`
 - 日常笔记 → 写入 `.cursor/memory/YYYY-MM-DD.md`（今天的日期）
 - 用户说"记住这个" → 立即写入文件
@@ -62,11 +54,9 @@ bun memory-tool.ts index
 
 每条记忆带时间戳：
 
-```markdown
 ### HH:MM 标题
 - **标签**: #决策 #偏好 #项目
 - 内容...
-```
 
 ## 禁止心理笔记
 
@@ -77,22 +67,17 @@ bun memory-tool.ts index
 
 ## 长对话记忆防丢失（Memory Flush）
 
-当对话变长时，上下文窗口会逐渐填满。系统可能在压缩上下文时丢失早期的关键信息。
+当对话变长时，上下文窗口会逐渐填满。
 
 **主动保存规则：**
 - 当对话超过 15 轮时，检查是否有重要信息还没写入文件
-- 当你感觉对话很长、做了很多事时，主动把关键决策和成果写入 `.cursor/memory/YYYY-MM-DD.md`
+- 主动把关键决策和成果写入 `.cursor/memory/YYYY-MM-DD.md`
 - 写入时使用 APPEND 模式（追加），不要覆盖已有内容
 - 每次保存时记录当前时间戳
 
-**值得保存的内容：**
-- 重要决策及其理由
-- 完成的任务和结果
-- 用户表达的偏好或约定
-- 需要后续跟进的事项
-- 关键的技术方案或配置变更
+**值得保存的内容：** 重要决策及其理由、完成的任务和结果、用户表达的偏好或约定、需要后续跟进的事项
 
-**不值得保存的：** 纯粹的闲聊、已写入其他文件的内容、临时性的调试过程。
+**不值得保存的：** 纯粹的闲聊、已写入其他文件的内容、临时性的调试过程
 
 ## 记忆维护
 

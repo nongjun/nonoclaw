@@ -950,6 +950,7 @@ const BILLING_PATTERNS = [
 	/usage.*limit.*exceeded/i,
 	/subscription.*expired/i,
 	/plan.*expired/i,
+	/resource_exhausted/i,
 	/402/,
 	/费用不足/,
 	/余额不足/,

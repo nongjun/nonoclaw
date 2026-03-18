@@ -1,0 +1,2 @@
+{"role":"user","message":{"content":[{"type":"text","text":"<user_query>\n根据以下对话，生成一个简短的中文标题。要求：必须使用中文，4-20个字，不加标点，不加引号，不加书名号，直接输出标题，不要输出任何其它内容。\n\n用户: [心跳检查] 读取 .cursor/HEARTBEAT.md（如果存在），严格按清单执行检查。\n不要凭空推断或重复旧任务。检查 .cursor/memory/ 获取近期上下文，需要时做后台维护。\n如果清单已过时，主动更新 .cursor/HEARTBEAT.md。如果无需关注，只回复 HEARTBEAT_OK。\n\nAI回复摘要: HEARTBEAT_OK\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"心跳检查正常无异常"}]}}
