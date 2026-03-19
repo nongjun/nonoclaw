@@ -42,20 +42,7 @@ alwaysApply: true
 
 ## 远程服务器
 
-通过 SSH 管理远程服务器（本地已配置免密登录）：
-
-| 名称 | 地址 | 系统 |
-|------|------|------|
-| OS服务器 | `ssh root@120.79.242.43` | Alibaba Cloud Linux 3 |
-
-```bash
-# 检查状态
-ssh root@120.79.242.43 "uptime && free -h && df -h /"
-# 查看容器
-ssh root@120.79.242.43 "docker ps"
-# 查看日志
-ssh root@120.79.242.43 "journalctl -n 100 --no-pager"
-```
+通过 SSH 管理远程服务器（需提前配置免密登录）。服务器详情见 `server-context.mdc`。
 
 注意：危险操作先确认，长时间命令加 `nohup`/`tmux`，不支持交互式命令（vim、top）。
 

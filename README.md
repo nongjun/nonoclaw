@@ -12,10 +12,12 @@ An AI agent that lives on your machine, remembers everything, checks in on its o
 
 Cursor Agent CLI is powerful but ephemeral — every session starts from scratch with no memory of the last one. **nonoclaw** wraps it with persistent closed-loop systems:
 
-- **Memory** — long-term recall across sessions, daily logs, semantic search
+- **Memory** — long-term recall across sessions, daily logs, semantic search, conversation distillation
 - **Heartbeat** — periodic self-check and background maintenance
 - **Scheduler** — AI-created cron jobs that execute autonomously
 - **Soul & Identity** — persistent personality that evolves over time
+- **Development Loop** — requirements → code → self-review → quality assessment
+- **Knowledge Sediment** — lessons learned → auto-written rules → AI keeps evolving
 
 IM (Feishu today, DingTalk/WeCom planned) is just one input adapter. The agent can also run headlessly via CLI or API bridge.
 
@@ -296,12 +298,14 @@ Phase 3: Platform
 
 ## 这是什么
 
-**nonoclaw** 是一个自主 AI Agent 系统，核心是四大闭环体系：
+**nonoclaw** 是一个自主 AI Agent 系统，核心是六大闭环体系：
 
-- **记忆体系** — 跨会话长期记忆、每日日记、语义搜索，AI 不再"失忆"
-- **心跳体系** — 定期自检和后台维护，AI 自主管理检查清单
-- **定时任务体系** — AI 创建和执行定时任务，到期自动运行并通知
-- **灵魂与身份体系** — 持久人格、原则、与主人的关系，跨会话一致
+- **记忆闭环** — 跨会话长期记忆、每日日记、语义搜索、对话蒸馏，AI 不再"失忆"
+- **心跳闭环** — 定期自检和后台维护，AI 自主管理检查清单
+- **调度闭环** — AI 创建和执行定时任务，到期自动运行并通知
+- **灵魂与身份** — 持久人格、原则、与主人的关系，跨会话一致
+- **开发闭环** — 需求 → 编码 → 自验证 → 质量评估
+- **知识沉淀闭环** — 踩坑经验 → 自动写入规则 → AI 持续进化
 
 IM（目前支持飞书，钉钉和企微计划中）只是输入通道——在手机上发消息，你的服务器或 Mac 就自动执行任务。也支持 CLI 和 API 桥接模式。
 
