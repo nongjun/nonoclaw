@@ -24,18 +24,17 @@ IM (Feishu today, DingTalk/WeCom planned) is just one input adapter. The agent c
 ## Architecture
 
 ```
-Phone (IM) ──WebSocket──→ nonoclaw ──Cursor CLI──→ Agent Systems
-                                    │                          │
-                             ┌──────┼──────┐            --resume (session continuity)
-                             │      │      │
-                          Text   Image   Voice
-                                          │
-                               Volcengine STT (primary)
-                               Local whisper (fallback)
-                                    │
-                             ┌──────┴──────┐
-                          Scheduler    Heartbeat
-                          (cron-jobs)  (.cursor/HEARTBEAT.md)
+Phone (IM) ──WebSocket──→ Gateway ──HTTP──→ Worker ──Cursor CLI──→ Agent Systems
+                          (gateway.ts)      (server.ts)                    │
+                          │                 │                    --resume (continuity)
+                     Feishu WS         ┌────┼──────┐
+                     Dedup/Parse       │    │      │
+                     Worker Mgmt    Text  Image  Voice
+                     Feishu API                    │
+                                       Volcengine STT / whisper
+                                              │
+                                       ┌──────┴──────┐
+                                    Scheduler    Heartbeat
 ```
 
 ## Features
@@ -87,7 +86,9 @@ cp .env.example .env
 ### 3. Run
 
 ```bash
-bun run server.ts
+bun run start.ts              # Gateway mode (recommended)
+# or
+bun run server.ts             # Standalone mode (debugging)
 ```
 
 You should see:
@@ -334,7 +335,8 @@ cp .env.example .env
 ### 启动
 
 ```bash
-bun run server.ts            # 手动启动（调试用）
+bun run start.ts             # 手动启动，Gateway 模式（推荐）
+bun run server.ts            # 独立模式（调试用）
 bash service.sh install      # 安装开机自启动（推荐）
 ```
 
@@ -512,8 +514,9 @@ bash service.sh uninstall  # 卸载自启动
 ### 手动运行（调试用）
 
 ```bash
-bun run server.ts                                        # 前台运行
-nohup bun run server.ts > /tmp/nonoclaw.log 2>&1 &  # 后台运行
+bun run start.ts                                         # 前台运行（Gateway 模式）
+nohup bun run start.ts > /tmp/nonoclaw.log 2>&1 &   # 后台运行
+bun run server.ts                                        # 独立模式（调试用）
 ```
 
 ### 其他

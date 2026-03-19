@@ -7,7 +7,7 @@
  * - 支持文字、图片、语音、文件、富文本
  * - 长消息自动分片
  *
- * 启动: bun run server.ts
+ * Worker 模式由 gateway.ts spawn（推荐）；独立模式: bun run server.ts
  */
 import * as Lark from "@larksuiteoapi/node-sdk";
 import { spawn, execFileSync } from "node:child_process";
