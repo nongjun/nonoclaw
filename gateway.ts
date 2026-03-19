@@ -1,9 +1,10 @@
 /**
- * nonoclaw Gateway v1
+ * nonoclaw Gateway v2
  *
- * 飞书连接 + Worker 进程管理
+ * 多渠道 IM 连接 + Worker 进程管理
  * - 飞书 WebSocket 长连接，接收消息事件
- * - 飞书操作 API（reply/update/send/download）供 Worker 通过 HTTP 调用
+ * - 钉钉 Stream 长连接，接收机器人消息
+ * - 飞书/钉钉操作 API 供 Worker 通过 HTTP 调用
  * - 消息去重和解析
  * - Worker 进程管理（spawn、健康检查、崩溃自动重启、消息队列）
  *
@@ -17,6 +18,10 @@ import {
 } from "node:fs";
 import { resolve } from "node:path";
 import { Readable } from "node:stream";
+import { startDingtalkStream, type DWClientDownStream } from "./dingtalk/client.js";
+import { replyViaWebhook, sendPrivateMessage, sendGroupMessage } from "./dingtalk/send.js";
+import { downloadDingtalkMediaById } from "./dingtalk/media.js";
+import type { DingtalkConfig, DingtalkMessageContext } from "./dingtalk/types.js";
 
 const ROOT = import.meta.dirname;
 const ENV_PATH = resolve(ROOT, ".env");
@@ -37,10 +42,14 @@ process.on("unhandledRejection", (reason) => {
 	console.error("[致命] unhandledRejection:", reason);
 });
 
-// ── .env 解析（仅飞书凭据）─────────────────────────
+// ── .env 解析 ─────────────────────────────────────
 interface GatewayEnvConfig {
 	FEISHU_APP_ID: string;
 	FEISHU_APP_SECRET: string;
+	DINGTALK_APP_KEY: string;
+	DINGTALK_APP_SECRET: string;
+	DINGTALK_ROBOT_CODE: string;
+	DINGTALK_AGENT_ID: string;
 }
 
 function parseEnv(): GatewayEnvConfig {
@@ -64,21 +73,29 @@ function parseEnv(): GatewayEnvConfig {
 	return {
 		FEISHU_APP_ID: env.FEISHU_APP_ID || "",
 		FEISHU_APP_SECRET: env.FEISHU_APP_SECRET || "",
+		DINGTALK_APP_KEY: env.DINGTALK_APP_KEY || "",
+		DINGTALK_APP_SECRET: env.DINGTALK_APP_SECRET || "",
+		DINGTALK_ROBOT_CODE: env.DINGTALK_ROBOT_CODE || env.DINGTALK_APP_KEY || "",
+		DINGTALK_AGENT_ID: env.DINGTALK_AGENT_ID || "",
 	};
 }
 
 const config = parseEnv();
+const hasDingtalk = !!(config.DINGTALK_APP_KEY && config.DINGTALK_APP_SECRET);
+const hasFeishu = !!(config.FEISHU_APP_ID && config.FEISHU_APP_SECRET);
 
 // ── 端口配置 ──────────────────────────────────────
 const GATEWAY_PORT = parseInt(process.env.GATEWAY_PORT || "18800");
 const WORKER_PORT = parseInt(process.env.WORKER_PORT || "18801");
 
-// ── 飞书 Client ──────────────────────────────────
-const larkClient = new Lark.Client({
-	appId: config.FEISHU_APP_ID,
-	appSecret: config.FEISHU_APP_SECRET,
-	domain: Lark.Domain.Feishu,
-});
+// ── 飞书 Client（仅在配置存在时创建）──────────────
+const larkClient = hasFeishu
+	? new Lark.Client({
+		appId: config.FEISHU_APP_ID,
+		appSecret: config.FEISHU_APP_SECRET,
+		domain: Lark.Domain.Feishu,
+	})
+	: null;
 
 // ── 卡片构建 ─────────────────────────────────────
 function buildCard(markdown: string, header?: { title?: string; color?: string }): string {
@@ -117,6 +134,7 @@ async function replyCard(
 	markdown: string,
 	header?: { title?: string; color?: string },
 ): Promise<string | undefined> {
+	if (!larkClient) return undefined;
 	try {
 		const res = await larkClient.im.message.reply({
 			path: { message_id: messageId },
@@ -140,6 +158,7 @@ async function updateCard(
 	markdown: string,
 	header?: { title?: string; color?: string },
 ): Promise<{ ok: boolean; error?: string }> {
+	if (!larkClient) return { ok: false, error: "feishu not configured" };
 	try {
 		await larkClient.im.message.patch({
 			path: { message_id: messageId },
@@ -158,6 +177,7 @@ async function sendCard(
 	markdown: string,
 	header?: { title?: string; color?: string },
 ): Promise<string | undefined> {
+	if (!larkClient) return undefined;
 	try {
 		const res = await larkClient.im.message.create({
 			params: { receive_id_type: "chat_id" },
@@ -198,6 +218,7 @@ async function downloadMedia(
 	type: "image" | "file",
 	ext: string,
 ): Promise<string> {
+	if (!larkClient) throw new Error("feishu not configured");
 	const response = await larkClient.im.messageResource.get({
 		path: { message_id: messageId, file_key: fileKey },
 		params: { type },
@@ -270,6 +291,9 @@ interface QueuedMessage {
 	chatType: string;
 	messageType: string;
 	content: string;
+	channel: "feishu" | "dingtalk";
+	sessionWebhook?: string;
+	senderStaffId?: string;
 	queuedAt: number;
 }
 
@@ -309,6 +333,9 @@ async function drainQueue(): Promise<void> {
 					chatType: msg.chatType,
 					messageType: msg.messageType,
 					content: msg.content,
+					channel: msg.channel,
+					sessionWebhook: msg.sessionWebhook,
+					senderStaffId: msg.senderStaffId,
 				}),
 				signal: AbortSignal.timeout(5000),
 			});
@@ -398,6 +425,9 @@ async function forwardToWorker(message: Omit<QueuedMessage, "queuedAt">): Promis
 				chatType: message.chatType,
 				messageType: message.messageType,
 				content: message.content,
+				channel: message.channel,
+				sessionWebhook: message.sessionWebhook,
+				senderStaffId: message.senderStaffId,
 			}),
 			signal: AbortSignal.timeout(5000),
 		});
@@ -446,6 +476,7 @@ dispatcher.register({
 				chatType,
 				messageType,
 				content,
+				channel: "feishu",
 			});
 		} catch (e) {
 			console.error("[事件异常]", e);
@@ -551,6 +582,99 @@ Bun.serve({
 			}
 		}
 
+		// ── 钉钉 API ──────────────────────────────
+		if (req.method === "POST" && path === "/dingtalk/reply") {
+			try {
+				const body = await req.json() as {
+					sessionWebhook?: string;
+					senderStaffId?: string;
+					chatId?: string;
+					chatType?: string;
+					markdown: string;
+					title?: string;
+					robotCode?: string;
+				};
+				if (body.sessionWebhook) {
+					const result = await replyViaWebhook(
+						body.sessionWebhook,
+						body.markdown,
+						body.title,
+						body.senderStaffId ? [body.senderStaffId] : undefined,
+					);
+					return Response.json(result);
+				}
+				const robotCode = body.robotCode || config.DINGTALK_ROBOT_CODE;
+				if (body.chatType === "1" && body.senderStaffId) {
+					const result = await sendPrivateMessage(robotCode, [body.senderStaffId], body.markdown, body.title);
+					return Response.json(result);
+				}
+				if (body.chatId) {
+					const result = await sendGroupMessage(robotCode, body.chatId, body.markdown, body.title);
+					return Response.json(result);
+				}
+				return Response.json({ ok: false, error: "missing sessionWebhook or chatId" }, { status: 400 });
+			} catch (err) {
+				return Response.json(
+					{ ok: false, error: err instanceof Error ? err.message : String(err) },
+					{ status: 500 },
+				);
+			}
+		}
+
+		if (req.method === "POST" && path === "/dingtalk/send") {
+			try {
+				const body = await req.json() as {
+					chatId: string;
+					chatType?: string;
+					senderStaffId?: string;
+					markdown: string;
+					title?: string;
+					robotCode?: string;
+				};
+				const robotCode = body.robotCode || config.DINGTALK_ROBOT_CODE;
+				if (body.chatType === "1" && body.senderStaffId) {
+					const result = await sendPrivateMessage(robotCode, [body.senderStaffId], body.markdown, body.title);
+					return Response.json(result);
+				}
+				const result = await sendGroupMessage(robotCode, body.chatId, body.markdown, body.title);
+				return Response.json(result);
+			} catch (err) {
+				return Response.json(
+					{ ok: false, error: err instanceof Error ? err.message : String(err) },
+					{ status: 500 },
+				);
+			}
+		}
+
+		if (req.method === "POST" && path === "/dingtalk/update") {
+			// 钉钉没有原生的消息更新 API（不像飞书可以 patch 消息），
+			// 在 server.ts 侧使用卡片更新或重新发送来替代
+			return Response.json({ ok: true, note: "dingtalk has no message patch API" });
+		}
+
+		if (req.method === "POST" && path === "/dingtalk/download") {
+			try {
+				const body = await req.json() as {
+					downloadCode: string;
+					robotCode?: string;
+					ext?: string;
+				};
+				const robotCode = body.robotCode || config.DINGTALK_ROBOT_CODE;
+				const filepath = await downloadDingtalkMediaById(
+					body.downloadCode,
+					robotCode,
+					INBOX_DIR,
+					body.ext || "",
+				);
+				return Response.json({ path: filepath });
+			} catch (err) {
+				return Response.json(
+					{ error: err instanceof Error ? err.message : String(err) },
+					{ status: 500 },
+				);
+			}
+		}
+
 		return new Response("Not Found", { status: 404 });
 	},
 });
@@ -566,23 +690,96 @@ process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
 
 // ── 飞书 WebSocket 长连接 ────────────────────────
-const wsClient = new Lark.WSClient({
-	appId: config.FEISHU_APP_ID,
-	appSecret: config.FEISHU_APP_SECRET,
-	domain: Lark.Domain.Feishu,
-	loggerLevel: Lark.LoggerLevel.info,
-});
+const wsClient = hasFeishu
+	? new Lark.WSClient({
+		appId: config.FEISHU_APP_ID,
+		appSecret: config.FEISHU_APP_SECRET,
+		domain: Lark.Domain.Feishu,
+		loggerLevel: Lark.LoggerLevel.info,
+	})
+	: null;
+
+// ── 钉钉消息处理 ─────────────────────────────────
+function parseDingtalkMessage(downstream: DWClientDownStream): DingtalkMessageContext | null {
+	try {
+		const raw = downstream.data;
+		const msg = JSON.parse(raw);
+		const text = msg.text?.content?.trim() || "";
+		const conversationType = msg.conversationType || "1";
+		const chatType = conversationType === "2" ? "group" : "p2p";
+		return {
+			conversationId: msg.conversationId || "",
+			conversationType,
+			chatId: msg.conversationId || "",
+			senderId: msg.senderId || "",
+			senderStaffId: msg.senderStaffId || "",
+			senderNick: msg.senderNick || "",
+			messageId: msg.msgId || downstream.headers.messageId || "",
+			messageType: msg.msgtype || "text",
+			text,
+			sessionWebhook: msg.sessionWebhook || "",
+			sessionWebhookExpiredTime: msg.sessionWebhookExpiredTime || 0,
+			robotCode: msg.robotCode || config.DINGTALK_ROBOT_CODE,
+			isAdmin: msg.isAdmin || false,
+			rawData: raw,
+		};
+	} catch (err) {
+		console.error("[钉钉] 消息解析失败:", err);
+		return null;
+	}
+}
 
 // ── 启动 ─────────────────────────────────────────
+const channels: string[] = [];
+if (hasFeishu) channels.push("飞书");
+if (hasDingtalk) channels.push("钉钉");
+
 console.log(`
 ┌──────────────────────────────────────┐
-│  nonoclaw Gateway v1                 │
+│  nonoclaw Gateway v2                 │
 │  HTTP:   localhost:${GATEWAY_PORT}              │
 │  Worker: localhost:${WORKER_PORT}              │
-│  飞书:   WebSocket 长连接            │
+│  渠道:   ${(channels.join(" + ") || "无").padEnd(25)}│
 └──────────────────────────────────────┘
 `);
 
 spawnWorker();
-wsClient.start({ eventDispatcher: dispatcher });
-console.log("飞书长连接已启动，等待消息...");
+
+if (wsClient) {
+	wsClient.start({ eventDispatcher: dispatcher });
+	console.log("[飞书] WebSocket 长连接已启动，等待消息...");
+}
+
+if (hasDingtalk) {
+	const dingtalkConfig: DingtalkConfig = {
+		appKey: config.DINGTALK_APP_KEY,
+		appSecret: config.DINGTALK_APP_SECRET,
+		robotCode: config.DINGTALK_ROBOT_CODE,
+		agentId: config.DINGTALK_AGENT_ID || undefined,
+	};
+	startDingtalkStream(dingtalkConfig, async (downstream) => {
+		const msg = parseDingtalkMessage(downstream);
+		if (!msg) return;
+
+		if (isDup(`dt_${msg.messageId}`)) return;
+
+		console.log(`[钉钉] type=${msg.messageType} chat=${msg.conversationType === "2" ? "group" : "p2p"} from=${msg.senderNick} text="${msg.text.slice(0, 60)}"`);
+
+		await forwardToWorker({
+			text: msg.text,
+			messageId: msg.messageId,
+			chatId: msg.chatId,
+			chatType: msg.conversationType === "2" ? "group" : "p2p",
+			messageType: msg.messageType,
+			content: msg.rawData,
+			channel: "dingtalk",
+			sessionWebhook: msg.sessionWebhook,
+			senderStaffId: msg.senderStaffId,
+		});
+	});
+	console.log("[钉钉] Stream 连接已启动，等待消息...");
+}
+
+if (!hasFeishu && !hasDingtalk) {
+	console.warn("[警告] 未配置任何 IM 渠道（飞书/钉钉），Gateway 仅提供 HTTP API");
+}

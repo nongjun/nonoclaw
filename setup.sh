@@ -44,8 +44,9 @@ NEED_BREW=()
 check_cmd brew || { echo "请先安装 Homebrew: https://brew.sh"; exit 1; }
 check_cmd bun || { echo "请先安装 Bun: curl -fsSL https://bun.sh/install | bash"; exit 1; }
 check_cmd ffmpeg || NEED_BREW+=(ffmpeg)
-check_cmd whisper-cli || NEED_BREW+=(whisper-cpp)
 check_cmd expect || NEED_BREW+=(expect)
+# whisper-cpp 作为语音识别兜底方案，配了火山引擎后也建议安装
+check_cmd whisper-cli || NEED_BREW+=(whisper-cpp)
 
 if [[ ${#NEED_BREW[@]} -gt 0 ]]; then
     echo ""
@@ -132,6 +133,22 @@ if [[ ! -f "$ENV_FILE" ]]; then
     read -rp "首选模型 [opus-4.6-thinking]: " MODEL
     MODEL=${MODEL:-opus-4.6-thinking}
 
+    echo ""
+    echo "🎙️ 语音识别配置（可选，回车跳过）"
+    echo "   开通火山引擎豆包语音: https://console.volcengine.com/speech/app"
+    echo "   需开通「大模型流式语音识别」服务"
+    echo ""
+    read -rp "火山引擎 APP ID: " VOLC_APP_ID
+    if [[ -n "$VOLC_APP_ID" ]]; then
+        read -rp "火山引擎 Access Token: " VOLC_TOKEN
+    fi
+
+    echo ""
+    echo "🧠 向量记忆搜索（可选，回车跳过）"
+    echo "   使用火山引擎豆包 Embedding API 启用语义搜索"
+    echo ""
+    read -rp "火山引擎 Embedding API Key: " VOLC_EMB_KEY
+
     # 使用 printf 避免变量中的特殊字符被 shell 展开
     {
         printf '# Cursor Agent CLI\n'
@@ -141,6 +158,12 @@ if [[ ! -f "$ENV_FILE" ]]; then
         printf 'FEISHU_APP_SECRET=%s\n' "$FEISHU_SECRET"
         printf '\n# 模型\n'
         printf 'CURSOR_MODEL=%s\n' "$MODEL"
+        printf '\n# 火山引擎语音识别（可选）\n'
+        printf 'VOLC_STT_APP_ID=%s\n' "$VOLC_APP_ID"
+        printf 'VOLC_STT_ACCESS_TOKEN=%s\n' "${VOLC_TOKEN:-}"
+        printf '\n# 火山引擎向量嵌入（可选）\n'
+        printf 'VOLC_EMBEDDING_API_KEY=%s\n' "${VOLC_EMB_KEY:-}"
+        printf 'VOLC_EMBEDDING_MODEL=doubao-embedding-vision-250615\n'
     } > "$ENV_FILE"
     echo "  ✅ .env 已创建"
 else
@@ -296,7 +319,7 @@ echo ""
 echo "  开机自启: bash service.sh install"
 fi
 echo ""
-echo "  更换 Key/模型: 直接编辑 .env（热更换）"
+echo "  更换 Key/模型/语音识别: 直接编辑 .env（热更换）"
 echo ""
 echo "  工作区文件位置: $DEFAULT_WS"
 echo "    编辑 .cursor/rules/ 下的 .mdc 文件完成个性化"
