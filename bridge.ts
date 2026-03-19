@@ -111,7 +111,7 @@ const MAX_EXEC_TIMEOUT = 30 * 60 * 1000;
 const IDLE_TIMEOUT = 60 * 1000;
 
 function runAgent(prompt: string): Promise<string> {
-	const workspace = resolve(import.meta.dirname, "..");
+	const workspace = resolve(import.meta.dirname);
 
 	return new Promise((res, reject) => {
 		const child = spawn(AGENT_BIN, [
