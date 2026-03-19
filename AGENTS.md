@@ -21,7 +21,9 @@
 
 ```
 nonoclaw/
-├── server.ts              # 主服务入口：飞书 WebSocket → Cursor Agent CLI
+├── start.ts               # 启动入口（launchd/systemd 通过此文件启动）
+├── gateway.ts             # Gateway 进程：飞书连接、Worker 管理、HTTP API
+├── server.ts              # Worker 进程：Agent 调度、记忆/定时/心跳（可独立运行）
 ├── bridge.ts              # OpenAI API 桥接（供 OpenClaw 调用）
 ├── memory.ts              # 记忆管理器 v2（SQLite + 向量 + FTS5）
 ├── memory-tool.ts         # 记忆 CLI（Agent 通过 shell 调用）
@@ -44,10 +46,12 @@ nonoclaw/
 
 ## 模块职责与依赖
 
-单进程架构，`server.ts` 是唯一进程入口，所有模块同进程运行。
+Gateway-Worker 双进程架构。`start.ts` 为服务入口，import `gateway.ts`；Gateway spawn `server.ts` 作为 Worker。
 
-- **server.ts** — 主进程，实例化 memory/scheduler/heartbeat，导入 feishu/
-- **memory.ts** — 记忆读写引擎，被 server.ts 实例化
+- **start.ts** — 服务入口，依赖检查后 import gateway.ts
+- **gateway.ts** — Gateway 进程，飞书 WebSocket、消息去重/解析、Worker 管理、飞书 HTTP API
+- **server.ts** — Worker 进程，实例化 memory/scheduler/heartbeat（检测 `GATEWAY_URL` 决定 Worker 或独立模式）
+- **memory.ts** — 记忆读写引擎，被 server.ts（Worker）实例化
 - **memory-tool.ts** — 独立 CLI，供 Agent 通过 shell 调用记忆系统
 - **distill-chats.ts** — 独立 CLI，定时从 Cursor 对话库提取记忆
 - **scheduler.ts** — 读取 cron-jobs.json 驱动定时任务
@@ -144,8 +148,6 @@ AI 拥有 HEARTBEAT.md 完全编辑权，清单过时时自主更新。
 | [架构.md](架构.md) | 系统架构、模块依赖、部署拓扑 |
 | [文档/设计文档/](文档/设计文档/) | 功能设计方案（标注验证状态） |
 | [文档/核心信念/](文档/核心信念/) | 工程原则、编码规范 |
-| [文档/执行计划/](文档/执行计划/) | 任务计划、技术债务 |
-| [文档/产品规格/](文档/产品规格/) | 业务需求定义 |
 | [文档/参考资料/](文档/参考资料/) | API 文档、第三方对接 |
 | [文档/质量评分/](文档/质量评分/) | 模块成熟度与改动风险 |
 | [文档/凭据与配置/](文档/凭据与配置/) | Token、密码、环境变量 |
@@ -153,7 +155,7 @@ AI 拥有 HEARTBEAT.md 完全编辑权，清单过时时自主更新。
 
 ## 部署与运维
 
-运行环境 macOS / Linux · 服务管理 `bash service.sh install/start/stop/restart/logs` · 启动 `bun run server.ts` · inbox/ 自动清理 24h 前临时文件 · 凭据见 [文档/凭据与配置/](文档/凭据与配置/)
+运行环境 macOS / Linux · 服务管理 `bash service.sh install/start/stop/restart/logs` · 启动 `bun run start.ts`（Gateway 模式）或 `bun run server.ts`（独立模式，调试用）· inbox/ 自动清理 24h 前临时文件 · 凭据见 [文档/凭据与配置/](文档/凭据与配置/)
 
 ## 核心体系保护名录
 
@@ -164,6 +166,6 @@ AI 拥有 HEARTBEAT.md 完全编辑权，清单过时时自主更新。
 ## 修改代码前必读
 
 1. 先读 [架构.md](架构.md) 了解全貌，查 `文档/设计文档/` 和 `文档/质量评分/`
-2. server.ts 是唯一进程入口；记忆系统区分 memory.ts（库）和 memory-tool.ts（CLI）
+2. start.ts 为服务入口（import gateway.ts），gateway.ts spawn server.ts 作为 Worker；记忆系统区分 memory.ts（库）和 memory-tool.ts（CLI）
 3. 遵守飞书卡片限制（详见 `agent-identity.mdc`）
 4. 改完 → `/审查刚才的文件与操作` · 涉及安全 → 安全卫士审查

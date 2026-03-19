@@ -4,7 +4,7 @@
   "description": "Autonomous AI agent with memory, heartbeat, scheduling, and identity — driven by Cursor CLI, controlled via IM (Feishu, DingTalk, WeCom)",
   "type": "module",
   "scripts": {
-    "start": "bun run server.ts",
+    "start": "bun run start.ts",
     "bridge": "bun run bridge.ts"
   },
   "engines": {
