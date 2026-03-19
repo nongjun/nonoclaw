@@ -34,6 +34,7 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@larksuiteoapi/node-sdk": "^1.59.0"
+    "@larksuiteoapi/node-sdk": "^1.59.0",
+    "dingtalk-stream": "^2.1.5"
   }
 }

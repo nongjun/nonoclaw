@@ -16,6 +16,7 @@ import { resolve } from "node:path";
 import { Readable } from "node:stream";
 import { gzipSync, gunzipSync } from "node:zlib";
 import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import WebSocket from "ws";
 import { MemoryManager } from "./memory.js";
 import { Scheduler, type CronJob } from "./scheduler.js";
@@ -420,13 +421,40 @@ function extractCardError(err: unknown): string | null {
 	return null;
 }
 
-// ── 飞书消息操作 ─────────────────────────────────
+// ── 消息操作（按渠道路由）────────────────────────
+function dingtalkReplyBody(markdown: string, title?: string): Record<string, unknown> {
+	const ctx = getChannelCtx();
+	return {
+		sessionWebhook: ctx.sessionWebhook,
+		senderStaffId: ctx.senderStaffId,
+		chatId: ctx.chatId,
+		chatType: ctx.chatType === "p2p" ? "1" : "2",
+		markdown,
+		title,
+	};
+}
+
 async function replyCard(
 	messageId: string,
 	markdown: string,
 	header?: { title?: string; color?: string },
 ): Promise<string | undefined> {
 	if (IS_WORKER) {
+		const { channel } = getChannelCtx();
+		if (channel === "dingtalk") {
+			try {
+				const res = await fetch(`${GATEWAY_URL}/dingtalk/reply`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify(dingtalkReplyBody(markdown, header?.title)),
+				});
+				const data = await res.json() as { ok?: boolean };
+				return data.ok ? messageId : undefined;
+			} catch (e) {
+				console.error("[Worker→Gateway] dingtalk replyCard failed:", e);
+			}
+			return undefined;
+		}
 		try {
 			const res = await fetch(`${GATEWAY_URL}/feishu/reply`, {
 				method: "POST",
@@ -463,6 +491,21 @@ async function updateCard(
 	header?: { title?: string; color?: string },
 ): Promise<{ ok: boolean; error?: string }> {
 	if (IS_WORKER) {
+		const { channel } = getChannelCtx();
+		if (channel === "dingtalk") {
+			try {
+				const res = await fetch(`${GATEWAY_URL}/dingtalk/reply`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify(dingtalkReplyBody(markdown, header?.title)),
+				});
+				const data = await res.json() as { ok?: boolean };
+				return { ok: !!data.ok };
+			} catch (e) {
+				console.error("[Worker→Gateway] dingtalk updateCard failed:", e);
+				return { ok: false, error: String(e) };
+			}
+		}
 		try {
 			const res = await fetch(`${GATEWAY_URL}/feishu/update`, {
 				method: "POST",
@@ -494,6 +537,27 @@ async function sendCard(
 	header?: { title?: string; color?: string },
 ): Promise<string | undefined> {
 	if (IS_WORKER) {
+		const ctx = getChannelCtx();
+		if (ctx.channel === "dingtalk") {
+			try {
+				const res = await fetch(`${GATEWAY_URL}/dingtalk/send`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						chatId,
+						chatType: ctx.chatType === "p2p" ? "1" : "2",
+						senderStaffId: ctx.senderStaffId,
+						markdown,
+						title: header?.title,
+					}),
+				});
+				const data = await res.json() as { ok?: boolean };
+				return data.ok ? chatId : undefined;
+			} catch (e) {
+				console.error("[Worker→Gateway] dingtalk sendCard failed:", e);
+			}
+			return undefined;
+		}
 		try {
 			const res = await fetch(`${GATEWAY_URL}/feishu/send`, {
 				method: "POST",
@@ -595,6 +659,20 @@ async function downloadMedia(
 	ext: string,
 ): Promise<string> {
 	if (IS_WORKER) {
+		const { channel } = getChannelCtx();
+		if (channel === "dingtalk") {
+			try {
+				const res = await fetch(`${GATEWAY_URL}/dingtalk/download`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ downloadCode: fileKey, ext }),
+				});
+				return (await res.json() as any).path;
+			} catch (e) {
+				console.error("[Worker→Gateway] dingtalk downloadMedia failed:", e);
+				throw e;
+			}
+		}
 		try {
 			const res = await fetch(`${GATEWAY_URL}/feishu/download`, {
 				method: "POST",
@@ -1556,6 +1634,21 @@ function isDup(id: string): boolean {
 	return false;
 }
 // ── 消息处理 ─────────────────────────────────────
+// ── 消息渠道上下文（AsyncLocalStorage 保证并发安全）
+interface ChannelContext {
+	channel: "feishu" | "dingtalk";
+	sessionWebhook?: string;
+	senderStaffId?: string;
+	chatId: string;
+	chatType: string;
+}
+
+const channelStore = new AsyncLocalStorage<ChannelContext>();
+
+function getChannelCtx(): ChannelContext {
+	return channelStore.getStore() || { channel: "feishu", chatId: "", chatType: "p2p" };
+}
+
 async function handle(params: {
 	text: string;
 	messageId: string;
@@ -1563,14 +1656,24 @@ async function handle(params: {
 	chatType: string;
 	messageType: string;
 	content: string;
+	channel?: "feishu" | "dingtalk";
+	sessionWebhook?: string;
+	senderStaffId?: string;
 }) {
 	const { messageId, chatId, chatType, messageType, content } = params;
 	let { text } = params;
-	// 记录最近活跃会话用于定时任务/心跳主动推送
 	lastActiveChatId = chatId;
-	console.log(`[${new Date().toISOString()}] [${messageType}] ${text.slice(0, 80)}`);
+	const channel = params.channel || "feishu";
+	console.log(`[${new Date().toISOString()}] [${channel}] [${messageType}] ${text.slice(0, 80)}`);
 
-	return handleInner(text, messageId, chatId, chatType, messageType, content);
+	const ctx: ChannelContext = {
+		channel,
+		sessionWebhook: params.sessionWebhook,
+		senderStaffId: params.senderStaffId,
+		chatId,
+		chatType,
+	};
+	return channelStore.run(ctx, () => handleInner(text, messageId, chatId, chatType, messageType, content));
 }
 
 async function handleInner(
@@ -2214,14 +2317,14 @@ async function handleInner(
 			} else {
 				// 卡片更新失败（通常是表格过多等渲染问题）→ 让大模型重新组织回复
 				console.log(`[重发] 卡片更新失败，通知 AI 重新回复`);
-				await updateCard(cardId, `⏳ 回复格式超出飞书限制，正在重新组织...`, { title: "重新组织中", color: "wathet" });
+			await updateCard(cardId, `⏳ 回复格式超出 IM 限制，正在重新组织...`, { title: "重新组织中", color: "wathet" });
 
-				const retryPrompt = [
-					"你的上一条回复发送到飞书时失败了。",
-					"",
-					"飞书卡片的限制：",
-					"- 单张卡片最多 5 个 Markdown 表格（这是最常见的失败原因）",
-					"- 卡片 JSON 总大小不超过 30KB（约 3500 中文字符）",
+			const retryPrompt = [
+				"你的上一条回复发送到 IM 时失败了。",
+				"",
+				"IM 卡片的限制：",
+				"- 单张卡片最多 5 个 Markdown 表格（这是最常见的失败原因）",
+				"- 卡片 JSON 总大小不超过 30KB（约 3500 中文字符）",
 					"",
 					"请重新回复刚才的内容，但要：",
 					"1. 表格最多用 3 个，其余改用列表（- 项目符号）",
@@ -2257,7 +2360,7 @@ async function handleInner(
 
 		const isAuthError = /authentication required|not authenticated|unauthorized|api.key/i.test(msg);
 		const body = isAuthError
-			? `**API Key 失效，请更换：**\n\n1. 打开 [Cursor Dashboard](https://cursor.com/dashboard) → Integrations → User API Keys\n2. 点 **Create API Key** 生成新 Key\n3. 在飞书发送：\`/apikey 你的新Key\`\n\n\`\`\`\n${msg.slice(0, 500)}\n\`\`\``
+			? `**API Key 失效，请更换：**\n\n1. 打开 [Cursor Dashboard](https://cursor.com/dashboard) → Integrations → User API Keys\n2. 点 **Create API Key** 生成新 Key\n3. 发送：\`/apikey 你的新Key\`\n\n\`\`\`\n${msg.slice(0, 500)}\n\`\`\``
 			: `**执行失败**\n\n\`\`\`\n${msg.slice(0, 2000)}\n\`\`\``;
 		const title = isAuthError ? "API Key 失效" : "执行失败";
 
@@ -2390,6 +2493,9 @@ if (IS_WORKER) {
 				const body = await req.json() as {
 					text: string; messageId: string; chatId: string;
 					chatType: string; messageType: string; content: string;
+					channel?: "feishu" | "dingtalk";
+					sessionWebhook?: string;
+					senderStaffId?: string;
 				};
 				handle(body).catch(console.error);
 				return new Response(null, { status: 202 });
@@ -2403,8 +2509,8 @@ if (IS_WORKER) {
 
 	console.log(`
 ┌──────────────────────────────────────────────────┐
-│  飞书 → Cursor Agent 中继服务 v5 [Worker]        │
-│  架构: Gateway + Worker                          │
+│  IM → Cursor Agent 中继服务 v6 [Worker]          │
+│  架构: Gateway + Worker (飞书/钉钉)              │
 ├──────────────────────────────────────────────────┤
 │  模型: ${config.CURSOR_MODEL}
 │  Key:  ...${config.CURSOR_API_KEY.slice(-8)}
