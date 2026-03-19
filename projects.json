@@ -1,9 +1,10 @@
 {
   "projects": {
-    "root": {
-      "path": "/root",
-      "description": "默认工作区"
-    }
+    "server": { "path": "/root/nonoclaw", "description": "服务器管理（默认工作区）" },
+    "aios": { "path": "/root/瑞小美AiOS", "description": "瑞小美 AiOS 系统" },
+    "kb": { "path": "/root/战绩看板", "description": "战绩看板" },
+    "da": { "path": "/root/data-analysis", "description": "数据分析" },
+    "kpi": { "path": "/root/Ai绩效", "description": "Ai绩效" }
   },
-  "default_project": "root"
+  "default_project": "server"
 }

@@ -1,7 +1,7 @@
 {
   "name": "nonoclaw",
   "version": "0.1.0",
-  "description": "Turn Feishu/Lark into a remote control for Cursor AI — your personal AI strategic partner via IM",
+  "description": "Autonomous AI agent with memory, heartbeat, scheduling, and identity — driven by Cursor CLI, controlled via IM (Feishu, DingTalk, WeCom)",
   "type": "module",
   "scripts": {
     "start": "bun run server.ts",
@@ -12,13 +12,15 @@
   },
   "keywords": [
     "cursor",
-    "feishu",
-    "lark",
     "ai-agent",
     "cursor-agent",
-    "speech-to-text",
-    "volcengine",
-    "whisper"
+    "autonomous-agent",
+    "memory",
+    "heartbeat",
+    "scheduling",
+    "feishu",
+    "dingtalk",
+    "wecom"
   ],
   "license": "MIT",
   "repository": {

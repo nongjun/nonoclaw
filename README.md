@@ -1,23 +1,28 @@
 # nonoclaw
 
-> Turn Feishu/Lark into a remote control for Cursor AI — text, voice, and images to code changes (and beyond).
+> Autonomous AI agent with persistent memory, heartbeat monitoring, scheduled tasks, and soul identity — powered by Cursor CLI, controlled via IM.
 
-Send a message on your phone, and your Mac writes code, reviews documents, or executes strategy tasks. No VPN, no SSH, no browser needed.
+An AI agent that lives on your machine, remembers everything, checks in on its own, runs scheduled tasks, and grows a persistent identity. IM adapters (Feishu/Lark today, DingTalk and WeCom planned) are just the input channel — the core is the closed-loop agent system.
 
-**[中文文档](#中文文档)**
+**[中文文档](#中文文档)** · **[服务器版安装指南](文档/安装帮助-服务器版.md)**
 
 ---
 
 ## Why
 
-Cursor Agent CLI is incredibly powerful, but you need to be at your desk to use it. **nonoclaw** bridges that gap: connect Feishu (Lark) to your local Cursor IDE via WebSocket, and control it from anywhere — your phone, a meeting, a coffee shop.
+Cursor Agent CLI is powerful but ephemeral — every session starts from scratch with no memory of the last one. **nonoclaw** wraps it with persistent closed-loop systems:
 
-Beyond coding, executives and knowledge workers use this to co-create documents, review strategies, and manage files with AI — turning Cursor into a **personal AI strategic partner** driven entirely via instant messaging.
+- **Memory** — long-term recall across sessions, daily logs, semantic search
+- **Heartbeat** — periodic self-check and background maintenance
+- **Scheduler** — AI-created cron jobs that execute autonomously
+- **Soul & Identity** — persistent personality that evolves over time
+
+IM (Feishu today, DingTalk/WeCom planned) is just one input adapter. The agent can also run headlessly via CLI or API bridge.
 
 ## Architecture
 
 ```
-Phone (Feishu) ──WebSocket──→ nonoclaw ──Cursor CLI──→ Local Cursor IDE
+Phone (IM) ──WebSocket──→ nonoclaw ──Cursor CLI──→ Agent Systems
                                     │                          │
                              ┌──────┼──────┐            --resume (session continuity)
                              │      │      │
@@ -291,9 +296,14 @@ Phase 3: Platform
 
 ## 这是什么
 
-**nonoclaw** 将飞书变成 Cursor AI 的远程遥控器。在手机上发消息，你的 Mac 就自动写代码、审文档、执行任务。
+**nonoclaw** 是一个自主 AI Agent 系统，核心是四大闭环体系：
 
-不仅仅是编程工具——企业高管可以用它和 AI 共创战略文档、审阅文件、管理知识库，让 Cursor 成为你的**私人 AI 战略合伙人**。
+- **记忆体系** — 跨会话长期记忆、每日日记、语义搜索，AI 不再"失忆"
+- **心跳体系** — 定期自检和后台维护，AI 自主管理检查清单
+- **定时任务体系** — AI 创建和执行定时任务，到期自动运行并通知
+- **灵魂与身份体系** — 持久人格、原则、与主人的关系，跨会话一致
+
+IM（目前支持飞书，钉钉和企微计划中）只是输入通道——在手机上发消息，你的服务器或 Mac 就自动执行任务。也支持 CLI 和 API 桥接模式。
 
 ## 快速开始
 
