@@ -42,7 +42,7 @@ function parseEnv(): EnvConfig {
 	}
 	return {
 		CURSOR_API_KEY: env.CURSOR_API_KEY || "",
-		CURSOR_MODEL: env.CURSOR_MODEL || "opus-4.6-thinking",
+		CURSOR_MODEL: env.CURSOR_MODEL || "claude-4.6-opus-high-thinking",
 	};
 }
 

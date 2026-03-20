@@ -17,13 +17,11 @@ alwaysApply: true
 | 身份系统 | `user-context.mdc`, `workspace-rules.mdc` | 用户画像 + 工作区安全边界 |
 | 工具能力 | `tools.mdc`, `cursor-capabilities.mdc` | Agent 能力清单 + 决策树 |
 | Bun 规范 | `use-bun-instead-of-node-vite-npm-pnpm.mdc` | 运行时强制约束 |
-| 产品架构 | `文档/设计文档/龙虾军团-产品架构设计.md` | 农总设计意图 + 架构指导，最高保护级 |
-| 工作区模板 | `templates/` 目录 | 每只虾的出厂 DNA，只含核心闭环 |
+| 工作区模板 | `templates/` 目录 | 新实例的出厂 DNA，只含核心闭环 |
 
 ## 保护规则
 
-1. **合并外部更新时**（如 awesome-harness-engineering），必须在合并后检查上述文件全部存在且内容完整
+1. **合并外部更新时**，必须在合并后检查上述文件全部存在且内容完整
 2. **git pull/rebase 后**，立即验证核心体系名录中的文件未被覆盖
 3. **重构或清理时**，这些文件不在清理范围内
 4. **如果被意外删除**，从 Git 历史或 `templates/` 目录恢复
-5. **龙虾军团产品架构设计**文档的修改必须事先获得农总（农俊）同意

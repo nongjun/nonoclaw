@@ -130,8 +130,8 @@ if [[ ! -f "$ENV_FILE" ]]; then
     read -rp "飞书 App ID: " FEISHU_ID
     read -rsp "飞书 App Secret: " FEISHU_SECRET
     echo ""
-    read -rp "首选模型 [opus-4.6-thinking]: " MODEL
-    MODEL=${MODEL:-opus-4.6-thinking}
+    read -rp "首选模型 [claude-4.6-opus-high-thinking]: " MODEL
+    MODEL=${MODEL:-claude-4.6-opus-high-thinking}
 
     echo ""
     echo "🎙️ 语音识别配置（可选，回车跳过）"
