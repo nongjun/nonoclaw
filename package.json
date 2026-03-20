@@ -35,6 +35,7 @@
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.59.0",
-    "dingtalk-stream": "^2.1.5"
+    "dingtalk-stream": "^2.1.5",
+    "ws": "^8.19.0"
   }
 }

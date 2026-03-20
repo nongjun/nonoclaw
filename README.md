@@ -160,7 +160,7 @@ Copy `.env.example` to `.env` and fill in your values:
 | `CURSOR_API_KEY` | Yes | [Cursor Dashboard](https://cursor.com/dashboard) → Integrations → User API Keys |
 | `FEISHU_APP_ID` | Yes | Feishu app ID |
 | `FEISHU_APP_SECRET` | Yes | Feishu app secret |
-| `CURSOR_MODEL` | No | Default: `opus-4.6-thinking` |
+| `CURSOR_MODEL` | No | Default: `claude-4.6-opus-high-thinking`（`agent models` 查看可用列表） |
 | `VOLC_STT_APP_ID` | No | Volcengine app ID (skip to disable cloud STT) |
 | `VOLC_STT_ACCESS_TOKEN` | No | Volcengine access token |
 | `VOLC_EMBEDDING_API_KEY` | No | Volcengine embedding API key (for memory vector search) |
@@ -256,6 +256,16 @@ Edit the `.cursor/rules/*.mdc` files in your workspace to personalize:
 - **`soul.mdc`** — adjust core principles and behavioral boundaries
 - **`tools.mdc`** — add servers, tools, and capability notes
 - **`.cursor/MEMORY.md`** — the AI maintains this automatically, but you can edit it too
+
+### Updating
+
+`git pull` is safe for deployed instances:
+
+- **Code & rules** update normally — improvements from the repo benefit all instances
+- **Templates** (`templates/`) update, but `ensureWorkspace()` never overwrites existing files
+- **Instance data** (`.cursor/MEMORY.md`, `IDENTITY.md`, `SOUL.md`, `USER.md`, etc.) is `.gitignore`d — your AI's memories and personality are never touched by upstream changes
+
+The project uses a three-layer separation: **code** (shared logic, tracked), **rules** (shared AI behavior DNA, tracked), and **instance data** (personal memories/identity, gitignored). See `AGENTS.md` for details.
 
 ## Roadmap
 
@@ -422,6 +432,16 @@ bash service.sh install      # 安装开机自启动（推荐）
 - `user-context.mdc` — 填入你的信息
 - `soul.mdc` — 调整核心原则和行为边界
 - `tools.mdc` — 添加服务器、工具备忘
+
+### 更新安全
+
+部署的实例可以放心执行 `git pull`：
+
+- **代码和规则**正常更新 — 开源仓库的改进惠及所有实例
+- **模板文件**（`templates/`）更新，但 `ensureWorkspace()` 不会覆盖已有文件
+- **实例数据**（`.cursor/MEMORY.md`、`IDENTITY.md`、`SOUL.md`、`USER.md` 等）已被 `.gitignore` 排除 — 你的 AI 记忆和人格不受上游更新影响
+
+项目采用三层隔离：**代码层**（共享逻辑，追踪）、**规则层**（共享 AI 行为 DNA，追踪）、**实例层**（私有记忆/身份，gitignored）。详见 `AGENTS.md`。
 
 ## 定时任务与心跳
 

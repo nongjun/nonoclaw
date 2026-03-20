@@ -45,8 +45,9 @@ inbox/
 .bashrc
 .profile
 
-# lock file (bun auto-generates)
+# lock files (bun project, npm lock is noise)
 bun.lock
+package-lock.json
 
 # memory system (runtime data)
 .sessions.json
@@ -56,3 +57,14 @@ bun.lock
 .cursor/memory/
 .cursor/sessions/
 .cursor/projects/
+
+# instance-layer files (personalized at runtime, templates in templates/.cursor/)
+.cursor/MEMORY.md
+.cursor/IDENTITY.md
+.cursor/SOUL.md
+.cursor/USER.md
+.cursor/BOOT.md
+.cursor/BOOTSTRAP.md
+.cursor/HEARTBEAT.md
+.cursor/TASKS.md
+.cursor/TOOLS.md
