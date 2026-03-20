@@ -1,25 +1,10 @@
 {
   "projects": {
-    "root": {
-      "path": "/Users/nongjun/Desktop/虾群平台版",
-      "description": "默认工作区"
-    },
-    "openclaw": {
-      "path": "/Users/nongjun/Desktop/Ai公司/openclaw",
-      "description": "OpenClaw 项目"
-    },
-    "ai": {
-      "path": "/Users/nongjun/Documents/Ai管理的文件夹",
-      "description": "AI 管理"
-    },
-    "api": {
-      "path": "/Users/nongjun/Desktop/API",
-      "description": "API 项目"
-    },
-    "strategy": {
-      "path": "/Users/nongjun/Documents/Ai管理的文件夹/公司战略",
-      "description": "公司战略"
-    }
+    "server": { "path": "/root/nonoclaw", "description": "服务器管理（默认工作区）" },
+    "aios": { "path": "/root/瑞小美AiOS", "description": "瑞小美 AiOS 系统" },
+    "kb": { "path": "/root/战绩看板", "description": "战绩看板" },
+    "da": { "path": "/root/data-analysis", "description": "数据分析" },
+    "kpi": { "path": "/root/Ai绩效", "description": "Ai绩效" }
   },
-  "default_project": "ai"
+  "default_project": "server"
 }

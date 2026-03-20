@@ -10,8 +10,7 @@ import { readFileSync, existsSync } from "node:fs";
 
 const RELAY_DIR = import.meta.dirname;
 const ENV_PATH = resolve(RELAY_DIR, ".env");
-const ROOT = resolve(RELAY_DIR, "..");
-const DB_PATH = resolve(ROOT, ".memory.sqlite");
+const DB_PATH = resolve(RELAY_DIR, ".memory.sqlite");
 
 function loadEnv(): Record<string, string> {
 	if (!existsSync(ENV_PATH)) return {};
