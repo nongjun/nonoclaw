@@ -1,39 +1,51 @@
 ---
-description: 远程服务器管理上下文（按需加载，部署后请按注释填入你的服务器信息）
+description: 服务器管理上下文 — 瑞小美测试开发服务器的架构、项目、约束
 globs:
-alwaysApply: false
+alwaysApply: true
 ---
 
 # 服务器管理上下文
 
-> **使用说明**：本文件是模板。部署 nonoclaw 到服务器后，填入你的服务器信息并将 `alwaysApply` 改为 `true`。
-
-你负责管理远程服务器。你的工作区在服务器上的 nonoclaw 目录内，但可以通过绝对路径访问整个服务器。
+你负责管理瑞小美测试开发服务器（120.79.242.43）。你的工作区在 `/root/nonoclaw/`，但你可以通过绝对路径访问整个服务器。
 
 ## 关键文档（必读）
 
-在做任何服务器级操作前，先读取服务器根目录的 `AGENTS.md` 和 `架构.md` 了解全貌。
+- **服务器入口**：`/root/AGENTS.md` — 所有项目索引和服务器角色说明
+- **基础设施架构**：`/root/架构.md` — 域名、Nginx、容器清单、crontab、与生产差异
+- **凭据**：`/root/文档/凭据与配置/` — 数据库、Redis 等共享凭据
 
-## 服务器信息
-
-<!-- 填入你的服务器地址和 SSH 连接方式 -->
-- **地址**：_(填入服务器 IP 或域名)_
-- **SSH**：`ssh user@your-server`
-- **工作区路径**：_(填入 nonoclaw 在服务器上的绝对路径)_
+在做任何服务器级操作前，先读取这两个文档了解全貌。
 
 ## 项目清单
 
-<!-- 填入服务器上运行的项目 -->
-_（按实际情况填写）_
+| 项目 | 路径 | 技术栈 |
+|------|------|--------|
+| 瑞小美 AiOS | `/root/瑞小美AiOS/` | Python FastAPI + Vue 3 |
+| 战绩看板 | `/root/战绩看板/` | Node.js + Express |
+| 数据分析 | `/root/data-analysis/` | Python FastAPI + Vue 3 + PostgreSQL |
+| Ai绩效 | `/root/Ai绩效/` | Node.js + Express + MySQL |
+| 数据库字典 | `/root/database-dictionary/` | Nginx 静态站点 |
+
+各项目有自己的 AGENTS.md 和文档，操作前先阅读。
 
 ## 关键约束
 
-<!-- 填入你的服务器特有约束，例如： -->
-- 测试服务器禁止触发生产环境的外发操作
-- 敏感操作前必须通过 IM 确认
+- `SCHEDULER_ENABLED=false`：AiOS 所有定时任务已关闭，防止与生产双跑
+- 禁止外发操作：企微消息、微盟发券、钉钉推送等
+- 企微/微盟回调 URL 只指向生产服务器
+- 域名规则：测试用 `test-*.ireborn.com.cn`，生产用 `*.ireborn.com.cn`
+
+## 常用运维命令
+
+- Docker 容器：`docker ps`、`docker logs <name>`、`docker restart <name>`
+- Nginx：`systemctl status/reload nginx`，配置在 `/etc/nginx/conf.d/`
+- 代理状态：`/opt/clash/check-proxy.sh`
+- SSL 证书：`certbot certificates`
 
 ## 安全红线
 
-- 不要修改生产域名的配置
-- 不要删除或覆盖 `.cursor/rules/` 和 `.cursor/skills/`
-- 敏感操作（删除数据、重启关键服务）前必须确认
+- 不要修改生产域名的 Nginx 配置（DNS 不指向本机，但配置文件存在）
+- 不要启用 AiOS 定时任务（SCHEDULER_ENABLED 必须保持 false）
+- 不要触发外发操作（企微消息、微盟发券）
+- 不要删除或覆盖 `/root/.cursor/rules/` 和 `/root/.cursor/skills/`（那是 IDE 的，不是你的）
+- 敏感操作（删除数据、重启关键服务）前必须通过飞书确认

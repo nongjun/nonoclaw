@@ -10,14 +10,11 @@
  * Worker 模式由 gateway.ts spawn（推荐）；独立模式: bun run server.ts
  */
 import * as Lark from "@larksuiteoapi/node-sdk";
-import { spawn, execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { readFileSync, readdirSync, statSync, watchFile, mkdirSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { Readable } from "node:stream";
-import { gzipSync, gunzipSync } from "node:zlib";
-import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
-import WebSocket from "ws";
 import { MemoryManager } from "./memory.js";
 import { Scheduler, type CronJob } from "./scheduler.js";
 import { HeartbeatRunner } from "./heartbeat.js";
@@ -697,204 +694,49 @@ async function downloadMedia(
 	return filepath;
 }
 
-// ── 语音转文字（火山引擎 → 云端 API → 本地 whisper）──
-const WHISPER_MODEL = resolve(HOME, ".cache/whisper-cpp/ggml-tiny.bin");
-const WHISPER_BIN = process.env.WHISPER_CLI || "whisper-cli";
-const STT_DEBUG = /^(whisper_|ggml_|main:|system_info:|metal_|coreml_|log_)/;
+// ── 语音转文字（火山引擎 OGG/Opus 直传，通过 Node.js 子进程调用）──
+// Bun 内置 WebSocket 在部分网络环境下连接火山引擎 API 失败，
+// 因此将 STT 逻辑放在独立的 Node.js 脚本中通过子进程调用。
+const VOLC_STT_SCRIPT = resolve(import.meta.dirname, "volc-stt.cjs");
 
-function convertToWav(audioPath: string): string {
-	const wavPath = audioPath.replace(/\.[^.]+$/, ".wav");
-	execFileSync("ffmpeg", ["-y", "-i", audioPath, "-ar", "16000", "-ac", "1", wavPath], {
-		timeout: 30_000,
-		stdio: "pipe",
+function transcribeVolcengine(audioPath: string): Promise<string> {
+	return new Promise((res, reject) => {
+		const child = spawn("node", [VOLC_STT_SCRIPT, audioPath, config.VOLC_STT_APP_ID, config.VOLC_STT_ACCESS_TOKEN], {
+			stdio: ["ignore", "pipe", "pipe"],
+			timeout: 35_000,
+		});
+		let stdout = "";
+		let stderr = "";
+		child.stdout!.on("data", (c: Buffer) => { stdout += c.toString(); });
+		child.stderr!.on("data", (c: Buffer) => { stderr += c.toString(); });
+		child.on("close", (code) => {
+			if (code === 0 && stdout.trim()) res(stdout.trim());
+			else reject(new Error(stderr.trim() || `exit ${code}`));
+		});
+		child.on("error", (err) => reject(new Error(`spawn: ${err.message}`)));
 	});
-	return wavPath;
-}
-
-// 火山引擎豆包大模型 STT（WebSocket 二进制协议）
-// 协议文档: https://www.volcengine.com/docs/6561/1354869
-const VOLC_STT_URL = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream";
-const VOLC_RESOURCE_ID = "volc.bigasr.sauc.duration";
-
-function volcBuildHeader(msgType: number, flags: number, serial: number, compress: number): Buffer {
-	const h = Buffer.alloc(4);
-	h[0] = 0x11; // protocol v1, header_size = 4 bytes (1×4)
-	h[1] = ((msgType & 0xF) << 4) | (flags & 0xF);
-	h[2] = ((serial & 0xF) << 4) | (compress & 0xF);
-	h[3] = 0x00;
-	return h;
-}
-
-function volcBuildPacket(header: Buffer, payload: Buffer): Buffer {
-	const size = Buffer.alloc(4);
-	size.writeUInt32BE(payload.length);
-	return Buffer.concat([header, size, payload]);
-}
-
-function transcribeVolcengine(wavPath: string): Promise<string> {
-	return new Promise((resolve, reject) => {
-		let settled = false;
-		const connectId = randomUUID();
-
-		const ws = new WebSocket(VOLC_STT_URL, {
-			headers: {
-				"X-Api-App-Key": config.VOLC_STT_APP_ID,
-				"X-Api-Access-Key": config.VOLC_STT_ACCESS_TOKEN,
-				"X-Api-Resource-Id": VOLC_RESOURCE_ID,
-				"X-Api-Connect-Id": connectId,
-			},
-		});
-
-		const timer = setTimeout(() => done(new Error("超时 (30s)")), 30_000);
-
-		function done(err: Error | null, text?: string) {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			try { ws.close(); } catch {}
-			if (err) reject(err);
-			else resolve(text!);
-		}
-
-		ws.on("open", () => {
-			// 1) full_client_request: JSON + gzip
-			const configPayload = Buffer.from(JSON.stringify({
-				user: { uid: "relay-bot" },
-				audio: { format: "pcm", rate: 16000, bits: 16, channel: 1 },
-				request: { model_name: "bigmodel", enable_itn: true, enable_punc: true, enable_ddc: true },
-			}));
-			const hdr = volcBuildHeader(0x1, 0x0, 0x1, 0x1);
-			ws.send(volcBuildPacket(hdr, gzipSync(configPayload)));
-
-			// 2) audio_only_request: 读 WAV 文件并分包发送 PCM 数据
-			const wav = readFileSync(wavPath);
-			let pcmOffset = 44;
-			for (let i = 12; i + 8 < wav.length;) {
-				if (wav.subarray(i, i + 4).toString("ascii") === "data") {
-					pcmOffset = i + 8;
-					break;
-				}
-				i += 8 + wav.readUInt32LE(i + 4);
-			}
-			const pcm = wav.subarray(pcmOffset);
-			const CHUNK = 6400; // 200ms @ 16kHz 16-bit mono
-
-			for (let off = 0; off < pcm.length; off += CHUNK) {
-				const isLast = off + CHUNK >= pcm.length;
-				const chunk = pcm.subarray(off, Math.min(off + CHUNK, pcm.length));
-				// flags: 0x2 = last packet, 0x0 = normal; serial: raw(0), compress: gzip(1)
-				const aHdr = volcBuildHeader(0x2, isLast ? 0x2 : 0x0, 0x0, 0x1);
-				ws.send(volcBuildPacket(aHdr, gzipSync(chunk)));
-			}
-		});
-
-		ws.on("message", (raw: Buffer | ArrayBuffer | Buffer[]) => {
-			const buf = Buffer.isBuffer(raw) ? raw : Buffer.from(raw as ArrayBuffer);
-			if (buf.length < 4) return;
-
-			const msgType = (buf[1] >> 4) & 0xF;
-			const flags = buf[1] & 0xF;
-			const compress = buf[2] & 0xF;
-
-			// 错误响应
-			if (msgType === 0xF) {
-				let msg = "服务端错误";
-				if (buf.length >= 12) {
-					const code = buf.readUInt32BE(4);
-					const msgLen = buf.readUInt32BE(8);
-					msg = `[${code}] ${buf.subarray(12, 12 + Math.min(msgLen, buf.length - 12)).toString("utf-8")}`;
-				}
-				done(new Error(msg));
-				return;
-			}
-
-			// 等待最终识别结果（flags bit 1 = 最后一包响应）
-			if (msgType === 0x9 && (flags & 0x2)) {
-				let off = 4;
-				if (flags & 0x1) off += 4; // 跳过 sequence number
-				if (off + 4 > buf.length) return;
-				const pSize = buf.readUInt32BE(off);
-				off += 4;
-				if (off + pSize > buf.length) return;
-
-				let payload = buf.subarray(off, off + pSize);
-				if (compress === 1) {
-					try { payload = gunzipSync(payload); } catch { done(new Error("解压响应失败")); return; }
-				}
-				try {
-					const json = JSON.parse(payload.toString("utf-8"));
-					const text = json?.result?.text?.trim();
-					if (text) done(null, text);
-					else done(new Error("识别结果为空"));
-				} catch {
-					done(new Error("解析响应 JSON 失败"));
-				}
-			}
-		});
-
-		ws.on("unexpected-response", (_req: unknown, res: { statusCode?: number }) => {
-			done(new Error(`HTTP ${res.statusCode ?? "unknown"} (WebSocket 升级被拒)`));
-		});
-		ws.on("error", (err: Error) => done(new Error(`WebSocket: ${err.message}`)));
-		ws.on("close", () => { if (!settled) done(new Error("连接意外断开")); });
-	});
-}
-
-function transcribeLocal(wavPath: string): string | null {
-	if (!existsSync(WHISPER_MODEL)) return null;
-	try {
-		const result = execFileSync(
-			WHISPER_BIN,
-			["--model", WHISPER_MODEL, "--language", "zh", "--no-timestamps", wavPath],
-			{ timeout: 120_000, encoding: "utf-8", stdio: "pipe" },
-		);
-		const transcript = result
-			.split("\n")
-			.filter((l: string) => !STT_DEBUG.test(l) && l.trim())
-			.join(" ")
-			.trim();
-		return transcript || null;
-	} catch (err) {
-		console.error("[STT 本地失败]", err instanceof Error ? err.message : err);
-		return null;
-	}
 }
 
 async function transcribeAudio(audioPath: string): Promise<string | null> {
-	let wavPath: string | undefined;
-	try {
-		wavPath = convertToWav(audioPath);
-
-		// 火山引擎豆包大模型（含重试）→ 本地 whisper 兜底
-		if (config.VOLC_STT_APP_ID && config.VOLC_STT_ACCESS_TOKEN) {
-			const maxRetries = 3;
-			for (let attempt = 1; attempt <= maxRetries; attempt++) {
-				try {
-					const text = await transcribeVolcengine(wavPath);
-					console.log(`[STT 火山引擎] 成功 (${text.length} chars, 第${attempt}次)`);
-					return text;
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					console.warn(`[STT 火山引擎] 第${attempt}/${maxRetries}次失败: ${msg}`);
-					if (attempt < maxRetries) {
-						console.log(`[STT 火山引擎] 500ms 后重试...`);
-						await new Promise((r) => setTimeout(r, 500));
-					}
+	if (config.VOLC_STT_APP_ID && config.VOLC_STT_ACCESS_TOKEN) {
+		const maxRetries = 3;
+		for (let attempt = 1; attempt <= maxRetries; attempt++) {
+			try {
+				const text = await transcribeVolcengine(audioPath);
+				console.log(`[STT 火山引擎] 成功 (${text.length} chars, 第${attempt}次)`);
+				return text;
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				console.warn(`[STT 火山引擎] 第${attempt}/${maxRetries}次失败: ${msg}`);
+				if (attempt < maxRetries) {
+					await new Promise((r) => setTimeout(r, 500));
 				}
 			}
-			console.warn("[STT 火山引擎] 重试耗尽，降级本地 whisper");
 		}
-
-		const local = transcribeLocal(wavPath);
-		if (local) console.log(`[STT 本地] 成功 (${local.length} chars)`);
-		else console.warn("[STT] 所有引擎均不可用");
-		return local;
-	} catch (err) {
-		console.error("[STT 转码失败]", err instanceof Error ? err.message : err);
-		return null;
-	} finally {
-		if (wavPath) try { unlinkSync(wavPath); } catch {}
+		console.warn("[STT 火山引擎] 重试耗尽");
 	}
+	console.warn("[STT] 所有引擎均不可用");
+	return null;
 }
 
 // ── 消息解析 ─────────────────────────────────────
@@ -1703,13 +1545,13 @@ async function handleInner(
 			}
 			const audioPath = await downloadMedia(messageId, parsed.fileKey, "file", ".ogg");
 			const transcript = await transcribeAudio(audioPath);
-			try { unlinkSync(audioPath); } catch {}
 			if (transcript) {
 				text = transcript;
+				try { unlinkSync(audioPath); } catch {}
 				console.log(`[语音] 转文字成功: ${transcript.slice(0, 80)}`);
 			} else {
 				text = `用户发了一条语音消息，音频文件在 ${audioPath}，请处理并回复。`;
-				console.warn("[语音] 转文字失败，传原始文件路径");
+				console.warn("[语音] 转文字失败，保留原始文件供 Agent 访问");
 			}
 		}
 		if (parsed.fileKey && messageType === "file") {
@@ -1810,7 +1652,7 @@ async function handleInner(
 	// /status → 服务状态一览
 	if (/^\/(status|状态)\s*$/i.test(text.trim())) {
 		const keyPreview = config.CURSOR_API_KEY ? `\`...${config.CURSOR_API_KEY.slice(-8)}\`` : "**未设置**";
-		const sttStatus = config.VOLC_STT_APP_ID ? "火山引擎豆包大模型" : (existsSync(WHISPER_MODEL) ? "本地 whisper" : "不可用");
+		const sttStatus = config.VOLC_STT_APP_ID ? "火山引擎豆包大模型（Node.js 子进程）" : "不可用";
 		const projects = Object.entries(projectsConfig.projects).map(([k, v]) => `  \`${k}\` → ${v.path}`).join("\n");
 		const sessions = [...sessionsStore.entries()]
 			.filter(([, s]) => s.active)
