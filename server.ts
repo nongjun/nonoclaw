@@ -806,32 +806,130 @@ function route(text: string): { workspace: string; prompt: string; label: string
 	};
 }
 
-// ── 可选模型列表 ─────────────────────────────────
-const CURSOR_MODELS = [
-	{ id: "opus-4.6-thinking", label: "Opus 4.6", desc: "最强深度推理" },
-	{ id: "opus-4.5-thinking", label: "Opus 4.5", desc: "强力推理" },
-	{ id: "gpt-5.3-codex", label: "GPT-5.3 Codex", desc: "OpenAI 编码旗舰" },
-	{ id: "gemini-3.1-pro", label: "Gemini 3.1 Pro", desc: "Google 最新旗舰" },
-	{ id: "gemini-3-pro", label: "Gemini 3 Pro", desc: "Google 旗舰" },
-	{ id: "gemini-3-flash", label: "Gemini 3 Flash", desc: "Google 极速" },
-	{ id: "auto", label: "Auto", desc: "自动选择最优" },
+// ── 可选模型列表（通过 `agent models` 动态拉取；失败时用此备用）────────
+interface AgentModelEntry {
+	id: string;
+	label: string;
+}
+
+const CURSOR_MODELS_FALLBACK: AgentModelEntry[] = [
+	{ id: "opus-4.6-thinking", label: "Opus 4.6 · 最强深度推理" },
+	{ id: "opus-4.5-thinking", label: "Opus 4.5 · 强力推理" },
+	{ id: "gpt-5.3-codex", label: "GPT-5.3 Codex · OpenAI 编码旗舰" },
+	{ id: "gemini-3.1-pro", label: "Gemini 3.1 Pro · Google 最新旗舰" },
+	{ id: "gemini-3-pro", label: "Gemini 3 Pro · Google 旗舰" },
+	{ id: "gemini-3-flash", label: "Gemini 3 Flash · Google 极速" },
+	{ id: "auto", label: "Auto · 自动选择最优" },
 ];
 
-function fuzzyMatchModel(input: string): { exact?: typeof CURSOR_MODELS[number]; candidates: typeof CURSOR_MODELS } {
+const AGENT_MODELS_CACHE_MS = 10 * 60 * 1000;
+const AGENT_MODELS_TIMEOUT_MS = 45_000;
+
+let agentModelsCache: { fetchedAt: number; list: AgentModelEntry[] } | null = null;
+
+function invalidateAgentModelsCache(): void {
+	agentModelsCache = null;
+}
+
+/** 解析 `agent models` 文本输出（含 ANSI 清除） */
+function parseAgentModelsOutput(raw: string): AgentModelEntry[] {
+	const text = strip(raw);
+	const out: AgentModelEntry[] = [];
+	for (const line of text.split("\n")) {
+		const t = line.trim();
+		if (!t || t === "Available models" || /^loading\s*models/i.test(t)) continue;
+		const sep = " - ";
+		const i = t.indexOf(sep);
+		if (i <= 0) continue;
+		const id = t.slice(0, i).trim();
+		let label = t.slice(i + sep.length).trim();
+		label = label.replace(/\s*\(current\)\s*$/i, "").replace(/\s*\(default\)\s*$/i, "").trim();
+		if (id) out.push({ id, label });
+	}
+	return out;
+}
+
+function fetchAgentModelsFromCli(apiKey: string): Promise<AgentModelEntry[]> {
+	return new Promise((resolve, reject) => {
+		const child = spawn(AGENT_BIN, ["models"], {
+			env: { ...process.env, CURSOR_API_KEY: apiKey },
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		let out = "";
+		let err = "";
+		const timer = setTimeout(() => {
+			try { child.kill("SIGTERM"); } catch {}
+			reject(new Error("agent models 超时"));
+		}, AGENT_MODELS_TIMEOUT_MS);
+		child.stdout?.on("data", (c: Buffer) => { out += c.toString(); });
+		child.stderr?.on("data", (c: Buffer) => { err += c.toString(); });
+		child.on("close", (code) => {
+			clearTimeout(timer);
+			if (code !== 0) {
+				reject(new Error(err.trim() || `agent models 退出码 ${code}`));
+				return;
+			}
+			const parsed = parseAgentModelsOutput(out);
+			if (parsed.length === 0) {
+				reject(new Error("未能解析模型列表"));
+				return;
+			}
+			resolve(parsed);
+		});
+		child.on("error", (e) => {
+			clearTimeout(timer);
+			reject(e);
+		});
+	});
+}
+
+interface AgentModelListResult {
+	list: AgentModelEntry[];
+	source: "live" | "cache" | "fallback";
+	cacheAgeMs?: number;
+}
+
+async function getAgentModelList(apiKey: string, forceRefresh: boolean): Promise<AgentModelListResult> {
+	const now = Date.now();
+	if (!apiKey?.trim()) {
+		return { list: CURSOR_MODELS_FALLBACK, source: "fallback" };
+	}
+	if (!forceRefresh && agentModelsCache && (now - agentModelsCache.fetchedAt < AGENT_MODELS_CACHE_MS)) {
+		return {
+			list: agentModelsCache.list,
+			source: "cache",
+			cacheAgeMs: now - agentModelsCache.fetchedAt,
+		};
+	}
+	try {
+		const list = await fetchAgentModelsFromCli(apiKey);
+		agentModelsCache = { fetchedAt: Date.now(), list };
+		return { list, source: "live" };
+	} catch (e) {
+		console.warn("[模型列表] CLI 拉取失败:", e);
+		if (agentModelsCache) {
+			return {
+				list: agentModelsCache.list,
+				source: "cache",
+				cacheAgeMs: Date.now() - agentModelsCache.fetchedAt,
+			};
+		}
+		return { list: CURSOR_MODELS_FALLBACK, source: "fallback" };
+	}
+}
+
+function fuzzyMatchModel(input: string, models: AgentModelEntry[]): { exact?: AgentModelEntry; candidates: AgentModelEntry[] } {
 	const q = input.toLowerCase().replace(/[\s_-]+/g, "");
 
-	// 精确匹配 id
-	const exact = CURSOR_MODELS.find((m) => m.id === input.toLowerCase());
+	const exact = models.find((m) => m.id === input.toLowerCase());
 	if (exact) return { exact, candidates: [] };
 
-	// 编号匹配
 	const num = Number.parseInt(input, 10);
-	if (!Number.isNaN(num) && num >= 1 && num <= CURSOR_MODELS.length) {
-		return { exact: CURSOR_MODELS[num - 1], candidates: [] };
+	if (!Number.isNaN(num) && num >= 1 && num <= models.length) {
+		return { exact: models[num - 1], candidates: [] };
 	}
 
-	// 模糊：id 或 label 包含输入
-	const candidates = CURSOR_MODELS.filter((m) => {
+	const candidates = models.filter((m) => {
 		const mid = m.id.replace(/[\s_-]+/g, "");
 		const mlab = m.label.toLowerCase().replace(/[\s_-]+/g, "");
 		return mid.includes(q) || mlab.includes(q) || q.includes(mid);
@@ -841,18 +939,23 @@ function fuzzyMatchModel(input: string): { exact?: typeof CURSOR_MODELS[number];
 	return { candidates };
 }
 
-function buildModelListCard(currentModel: string, errorHint?: string): string {
+function buildModelListMarkdown(
+	currentModel: string,
+	items: AgentModelEntry[],
+	opts?: { errorHint?: string; listNote?: string },
+): string {
 	const lines: string[] = [];
-	if (errorHint) lines.push(`${errorHint}\n`);
-	for (let i = 0; i < CURSOR_MODELS.length; i++) {
-		const m = CURSOR_MODELS[i];
+	if (opts?.errorHint) lines.push(`${opts.errorHint}\n`);
+	if (opts?.listNote) lines.push(`${opts.listNote}\n`);
+	for (let i = 0; i < items.length; i++) {
+		const m = items[i];
 		const isCurrent = m.id === currentModel;
 		lines.push(isCurrent
-			? `**${i + 1}. ${m.id}** · ${m.desc} ✅`
-			: `${i + 1}. \`${m.id}\` · ${m.desc}`);
+			? `**${i + 1}. ${m.id}** · ${m.label} ✅`
+			: `${i + 1}. \`${m.id}\` · ${m.label}`);
 	}
 	lines.push("");
-	lines.push("> 发送 `/模型 编号` 或 `/模型 名称` 切换");
+	lines.push("> 发送 `/模型 编号` 或 `/模型 名称` 切换 · `/模型 刷新` 强制从 CLI 更新列表");
 	return lines.join("\n");
 }
 
@@ -1594,6 +1697,7 @@ async function handleInner(
 			const envContent = readFileSync(ENV_PATH, "utf-8");
 			const updated = envContent.replace(/^CURSOR_API_KEY=.*$/m, `CURSOR_API_KEY=${rawKey}`);
 			writeFileSync(ENV_PATH, updated);
+			invalidateAgentModelsCache();
 			await replyCard(messageId, `**API Key 已更换**\n\n新 Key: \`...${rawKey.slice(-8)}\`\n\n已写入 .env 并自动生效。`, { title: "Key 已更新", color: "green" });
 			console.log(`[指令] API Key 已通过飞书更换 (...${rawKey.slice(-8)})`);
 		} catch (err) {
@@ -1621,7 +1725,8 @@ async function handleInner(
 			`- ${c("/新对话", "/new")} — 归档当前会话，开启新对话`,
 			"",
 			"**模型与密钥**",
-			`- ${c("/模型", "/model")} — 查看/切换 AI 模型`,
+			`- ${c("/模型", "/model")} — 从 Cursor CLI 列出全部可用模型并切换`,
+			"- `/模型 刷新` — 强制重新拉取模型列表",
 			`- ${c("/密钥", "/apikey")} — 查看/更换 API Key（仅私聊）`,
 			"  用法：`/密钥 key_xxx...`",
 			"",
@@ -1691,20 +1796,36 @@ async function handleInner(
 	// /model、/模型、/切换模型 → 切换模型
 	const modelMatch = text.match(/^\/(model|模型|切换模型)[\s:：=]*(.*)/i);
 	if (modelMatch) {
-		const input = modelMatch[2].trim();
+		let input = modelMatch[2].trim();
+		const forceRefresh = /^(刷新|refresh)$/i.test(input);
+		if (forceRefresh) input = "";
 
-		// 无参数 → 显示模型列表
+		// 无参数 → 从 Cursor CLI 拉取并显示完整模型列表
 		if (!input) {
-			await replyCard(messageId, buildModelListCard(config.CURSOR_MODEL), { title: "选择模型", color: "blue" });
+			const loadingId = await replyCard(messageId, "⏳ 正在通过 `agent models` 拉取当前账号可用模型…", { title: "模型列表", color: "wathet" });
+			const { list, source, cacheAgeMs } = await getAgentModelList(config.CURSOR_API_KEY, forceRefresh);
+			const listNote = source === "fallback"
+				? "⚠️ **无法从 CLI 拉取列表**（检查 `AGENT_BIN`、网络与 API Key），以下为内置备用条目。"
+				: source === "cache" && cacheAgeMs != null
+					? `> 列表来自缓存（约 ${Math.max(1, Math.round(cacheAgeMs / 60000))} 分钟前）。发送 \`/模型 刷新\` 可强制更新。`
+					: "";
+			const body = buildModelListMarkdown(config.CURSOR_MODEL, list, { listNote });
+			if (loadingId) {
+				const ok = await updateCardLong(loadingId, chatId, body, { title: "选择模型", color: "blue" });
+				if (!ok) await replyLongMessage(messageId, chatId, body, { title: "选择模型", color: "blue" });
+			} else {
+				await replyLongMessage(messageId, chatId, body, { title: "选择模型", color: "blue" });
+			}
 			return;
 		}
 
-		const { exact, candidates } = fuzzyMatchModel(input);
+		const { list: modelList } = await getAgentModelList(config.CURSOR_API_KEY, false);
+		const { exact, candidates } = fuzzyMatchModel(input, modelList);
 
 		if (exact) {
 			// 精确匹配或唯一模糊匹配 → 直接切换
 			if (exact.id === config.CURSOR_MODEL) {
-				await replyCard(messageId, `当前已是 **${exact.id}**（${exact.desc}），无需切换。`, { title: "当前模型", color: "blue" });
+				await replyCard(messageId, `当前已是 **${exact.id}**（${exact.label}），无需切换。`, { title: "当前模型", color: "blue" });
 				return;
 			}
 			const envContent = readFileSync(ENV_PATH, "utf-8");
@@ -1713,21 +1834,23 @@ async function handleInner(
 				: `${envContent.trimEnd()}\nCURSOR_MODEL=${exact.id}\n`;
 			writeFileSync(ENV_PATH, updated);
 			const prev = config.CURSOR_MODEL;
-			await replyCard(messageId, `${prev} → **${exact.id}**（${exact.desc}）\n\n已写入 .env，2 秒内自动生效。`, { title: "模型已切换", color: "green" });
+			await replyCard(messageId, `${prev} → **${exact.id}**（${exact.label}）\n\n已写入 .env，2 秒内自动生效。`, { title: "模型已切换", color: "green" });
 			console.log(`[指令] 模型切换: ${prev} → ${exact.id}`);
 			return;
 		}
 
 		if (candidates.length > 1) {
 			// 多个候选 → 提示用户精确选择
-			const list = candidates.map((m) => `- \`${m.id}\`（${m.desc}）`).join("\n");
+			const list = candidates.map((m) => `- \`${m.id}\`（${m.label}）`).join("\n");
 			await replyCard(messageId, `「${input}」匹配到多个模型：\n\n${list}\n\n请输入更精确的名称或编号。`, { title: "请精确选择", color: "orange" });
 			return;
 		}
 
 		// 列表外的自定义模型名 → 确认后切换
 		if (input.length < 2 || /^\d+$/.test(input)) {
-			await replyCard(messageId, buildModelListCard(config.CURSOR_MODEL, `「${input}」无匹配，请从列表中选择`), { title: "未找到模型", color: "orange" });
+			const { list: listForCard } = await getAgentModelList(config.CURSOR_API_KEY, false);
+			const body = buildModelListMarkdown(config.CURSOR_MODEL, listForCard, { errorHint: `「${input}」无匹配，请从列表中选择` });
+			await replyLongMessage(messageId, chatId, body, { title: "未找到模型", color: "orange" });
 			return;
 		}
 
@@ -1737,7 +1860,7 @@ async function handleInner(
 			: `${envContent.trimEnd()}\nCURSOR_MODEL=${input}\n`;
 		writeFileSync(ENV_PATH, updated);
 		const prev = config.CURSOR_MODEL;
-		await replyCard(messageId, `${prev} → **${input}**\n\n⚠️ 此模型不在常用列表中，若名称有误可能导致执行失败。\n发送 \`/模型\` 查看常用列表。`, { title: "模型已切换", color: "yellow" });
+		await replyCard(messageId, `${prev} → **${input}**\n\n⚠️ 此模型不在当前 CLI 列表中，若名称有误可能导致执行失败。\n发送 \`/模型\` 查看完整列表。`, { title: "模型已切换", color: "yellow" });
 		console.log(`[指令] 模型切换(自定义): ${prev} → ${input}`);
 		return;
 	}
