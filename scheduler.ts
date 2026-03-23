@@ -151,6 +151,8 @@ export class Scheduler {
 	private opts: SchedulerOpts;
 	private running = false;
 	private saving = false;
+	private ticking = false;
+	private executingJobs = new Set<string>();
 	private lastSaveTime = 0;
 	private log: (msg: string) => void;
 
@@ -189,10 +191,10 @@ export class Scheduler {
 		const prev = new Map(this.jobs);
 		await this.loadFromDisk();
 
-		// Preserve runtime state for unchanged jobs
+		// Preserve runtime state: always for executing jobs, by updatedAt for others
 		for (const [id, job] of this.jobs) {
 			const old = prev.get(id);
-			if (old && old.updatedAt === job.updatedAt) {
+			if (old && (old.updatedAt === job.updatedAt || this.executingJobs.has(id))) {
 				job.state = { ...job.state, ...old.state };
 			}
 		}
@@ -274,7 +276,7 @@ export class Scheduler {
 		let nearestJob: CronJob | null = null;
 
 		for (const job of this.jobs.values()) {
-			if (!job.enabled || !job.state.nextRunAtMs) continue;
+			if (!job.enabled || !job.state.nextRunAtMs || this.executingJobs.has(job.id)) continue;
 			if (job.state.nextRunAtMs < nearestMs) {
 				nearestMs = job.state.nextRunAtMs;
 				nearestJob = job;
@@ -292,38 +294,48 @@ export class Scheduler {
 	}
 
 	private async tick(): Promise<void> {
-		if (!this.running) return;
-		const now = Date.now();
+		if (!this.running || this.ticking) return;
+		this.ticking = true;
+		try {
+			const now = Date.now();
 
-		// Collect all due jobs
-		const due: CronJob[] = [];
-		for (const job of this.jobs.values()) {
-			if (job.enabled && job.state.nextRunAtMs && job.state.nextRunAtMs <= now) {
-				due.push(job);
+			const due: CronJob[] = [];
+			for (const job of this.jobs.values()) {
+				if (job.enabled && job.state.nextRunAtMs && job.state.nextRunAtMs <= now && !this.executingJobs.has(job.id)) {
+					due.push(job);
+				}
 			}
-		}
 
-		for (const job of due) {
-			await this.executeJob(job);
+			for (const job of due) {
+				this.executeJob(job)
+					.then(() => this.reschedule())
+					.catch((e) => this.log(`任务 "${job.name}" 异常: ${e}`));
+			}
+		} finally {
+			this.ticking = false;
+			this.reschedule();
 		}
-
-		this.reschedule();
 	}
 
 	private async executeJob(job: CronJob): Promise<{ status: string; error?: string }> {
+		if (this.executingJobs.has(job.id)) {
+			this.log(`跳过 "${job.name}"：正在执行中`);
+			return { status: "skipped" };
+		}
+		this.executingJobs.add(job.id);
 		const now = Date.now();
 		this.log(`执行 "${job.name}" (${job.id.slice(0, 8)})`);
 
 		let status: "ok" | "error" = "error";
 		let error: string | undefined;
+		let resultText: string | undefined;
 
 		try {
 			const result = await this.opts.onExecute(job);
 			status = result.status;
 			error = result.error;
+			resultText = result.result;
 			if (status === "ok") {
-				job.state.consecutiveErrors = 0;
-				job.state.lastError = undefined;
 				if (result.result && this.opts.onDelivery) {
 					await this.opts.onDelivery(job, result.result).catch((e) =>
 						this.log(`投递失败 "${job.name}": ${e}`),
@@ -332,26 +344,36 @@ export class Scheduler {
 			}
 		} catch (err) {
 			error = err instanceof Error ? err.message : String(err);
+		} finally {
+			this.executingJobs.delete(job.id);
 		}
 
-		job.state.lastRunAtMs = now;
-		job.state.lastStatus = status;
-		if (status === "error") {
-			job.state.lastError = error;
-			job.state.consecutiveErrors = (job.state.consecutiveErrors || 0) + 1;
-			this.log(`任务 "${job.name}" 失败 (${job.state.consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}): ${error}`);
-			if (job.state.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-				job.enabled = false;
-				this.log(`任务 "${job.name}" 连续失败 ${MAX_CONSECUTIVE_ERRORS} 次，已自动禁用`);
+		const current = this.jobs.get(job.id);
+		if (!current) {
+			this.log(`任务 "${job.name}" 执行期间被删除，跳过状态更新`);
+			return { status, error };
+		}
+
+		current.state.lastRunAtMs = now;
+		current.state.lastStatus = status;
+		if (status === "ok") {
+			current.state.consecutiveErrors = 0;
+			current.state.lastError = undefined;
+		} else {
+			current.state.lastError = error;
+			current.state.consecutiveErrors = (current.state.consecutiveErrors || 0) + 1;
+			this.log(`任务 "${current.name}" 失败 (${current.state.consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}): ${error}`);
+			if (current.state.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+				current.enabled = false;
+				this.log(`任务 "${current.name}" 连续失败 ${MAX_CONSECUTIVE_ERRORS} 次，已自动禁用`);
 			}
 		}
 
-		// One-shot "at" tasks: remove or disable after execution
-		if (job.schedule.kind === "at") {
-			if (job.deleteAfterRun) this.jobs.delete(job.id);
-			else job.enabled = false;
+		if (current.schedule.kind === "at") {
+			if (current.deleteAfterRun) this.jobs.delete(current.id);
+			else current.enabled = false;
 		} else {
-			job.state.nextRunAtMs = computeNextRun(job, now);
+			current.state.nextRunAtMs = computeNextRun(current, now);
 		}
 
 		await this.save();
@@ -379,6 +401,7 @@ export class Scheduler {
 			this.jobs.clear();
 			const now = Date.now();
 			for (const job of store.jobs) {
+				if (!job.state || typeof job.state !== "object" || Array.isArray(job.state)) job.state = {};
 				if (!job.state.nextRunAtMs && job.enabled) {
 					job.state.nextRunAtMs = computeNextRun(job, now);
 				}

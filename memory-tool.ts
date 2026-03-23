@@ -16,7 +16,7 @@ import { MemoryManager } from "./memory.js";
 
 const RELAY_DIR = import.meta.dirname;
 const ENV_PATH = resolve(RELAY_DIR, ".env");
-const ROOT = resolve(RELAY_DIR, "..");
+const ROOT = RELAY_DIR;
 const PROJECTS_PATH = resolve(ROOT, "projects.json");
 
 function loadEnv(): Record<string, string> {
