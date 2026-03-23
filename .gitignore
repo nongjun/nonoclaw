@@ -45,11 +45,15 @@ inbox/
 .bashrc
 .profile
 
+# runtime state backup
+*.bak
+
 # lock files (bun project, npm lock is noise)
 bun.lock
 package-lock.json
 
 # memory system (runtime data)
+.last-chat-id
 .sessions.json
 .memory.sqlite
 .memory.sqlite-wal

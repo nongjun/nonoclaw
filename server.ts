@@ -216,7 +216,29 @@ try {
 }
 
 // ── 最近活跃会话（用于定时任务/心跳主动推送）─────
+const LAST_CHAT_PATH = resolve(ROOT, ".last-chat-id");
 let lastActiveChatId: string | undefined;
+try {
+	if (existsSync(LAST_CHAT_PATH)) lastActiveChatId = readFileSync(LAST_CHAT_PATH, "utf-8").trim() || undefined;
+} catch {}
+
+function persistChatId(chatId: string): void {
+	lastActiveChatId = chatId;
+	try { writeFileSync(LAST_CHAT_PATH, chatId); } catch {}
+}
+
+// ── 最近一条定时任务报告（始终注入飞书会话）────
+let lastCronReport: { name: string; result: string; ts: number } | null = null;
+
+function pushCronReport(name: string, result: string) {
+	lastCronReport = { name, result, ts: Date.now() };
+}
+
+function getRecentCronContext(): string {
+	if (!lastCronReport) return "";
+	const ago = Math.round((Date.now() - lastCronReport.ts) / 60000);
+	return `[上一条定时任务报告（${lastCronReport.name}，${ago}分钟前），供你理解用户指示的上下文]\n\n${lastCronReport.result}\n\n---\n\n`;
+}
 
 // ── 定时任务调度器 ────────────────────────────────
 const cronStorePath = resolve(defaultWorkspace, "cron-jobs.json");
@@ -227,8 +249,9 @@ const scheduler = new Scheduler({
 	onExecute: async (job: CronJob) => {
 		try {
 			const ws = job.workspace || defaultWorkspace;
+			const lockKey = `cron:${job.id}`;
 			memory?.appendSessionLog(ws, "user", `[定时任务:${job.name}] ${job.message}`, config.CURSOR_MODEL);
-			const { result } = await runAgent(ws, job.message);
+			const { result } = await execAgent(lockKey, ws, config.CURSOR_MODEL, job.message);
 			memory?.appendSessionLog(ws, "assistant", result.slice(0, 3000), config.CURSOR_MODEL);
 			return { status: "ok" as const, result };
 		} catch (err) {
@@ -236,6 +259,7 @@ const scheduler = new Scheduler({
 		}
 	},
 	onDelivery: async (job: CronJob, result: string) => {
+		pushCronReport(job.name, result);
 		if (!lastActiveChatId) {
 			console.warn("[调度] 无活跃会话，跳过发送");
 			return;
@@ -1607,7 +1631,7 @@ async function handle(params: {
 }) {
 	const { messageId, chatId, chatType, messageType, content } = params;
 	let { text } = params;
-	lastActiveChatId = chatId;
+	persistChatId(chatId);
 	const channel = params.channel || "feishu";
 	console.log(`[${new Date().toISOString()}] [${channel}] [${messageType}] ${text.slice(0, 80)}`);
 
@@ -2256,7 +2280,10 @@ async function handleInner(
 		: undefined;
 
 	try {
-		const { result, quotaWarning } = await runAgent(workspace, prompt, { onProgress, onStart });
+		const cronCtx = getRecentCronContext();
+		const agentPrompt = cronCtx ? cronCtx + prompt : prompt;
+
+		const { result, quotaWarning } = await runAgent(workspace, agentPrompt, { onProgress, onStart });
 		const usedModel = quotaWarning ? "auto" : model;
 		const elapsed = formatElapsed(Math.round((Date.now() - taskStart) / 1000));
 		console.log(`[${new Date().toISOString()}] 完成 [${label}] model=${usedModel} elapsed=${elapsed} (${result.length} chars)`);
