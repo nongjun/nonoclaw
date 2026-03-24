@@ -6,8 +6,26 @@
   python3 query-sls.py --hours 6                # 近6小时
   python3 query-sls.py --query "level:ERROR AND __tag__:login"  # 自定义查询
   python3 query-sls.py --logstore ai-stats      # 指定 logstore
+
+说明：本机若启用 proxychains（LD_PRELOAD）或 HTTP(S)_PROXY 指向本地 Clash，
+访问阿里云 SLS OpenAPI 易出现 HTTP 502。脚本会在检测到上述情况时自动 re-exec
+为直连环境，避免误判为「SLS 故障」。
 """
 import argparse, time, json, os, sys
+
+
+def _maybe_reexec_without_local_proxy():
+    """避免 proxychains / 127.0.0.1:7897 链路导致 SLS 502。"""
+    ld = os.environ.get("LD_PRELOAD", "")
+    hp = os.environ.get("HTTP_PROXY", "") + os.environ.get("HTTPS_PROXY", "") + os.environ.get("ALL_PROXY", "")
+    lp = os.environ.get("http_proxy", "") + os.environ.get("https_proxy", "") + os.environ.get("all_proxy", "")
+    combined = hp + lp
+    risky = ("proxychains" in ld.lower()) or ("127.0.0.1:7897" in combined) or ("localhost:7897" in combined)
+    if not risky:
+        return
+    env = {k: v for k, v in os.environ.items() if k.upper() not in ("LD_PRELOAD", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY") and k.lower() not in ("http_proxy", "https_proxy", "all_proxy")}
+    script = os.path.abspath(__file__)
+    os.execve(sys.executable, [sys.executable, script] + sys.argv[1:], env)
 
 def load_env(path="/root/瑞小美AiOS/.env"):
     env = {}
@@ -72,4 +90,5 @@ def main():
         print(f"[{i+1}] {ts} [{level}] {module}: {msg[:300]}")
 
 if __name__ == "__main__":
+    _maybe_reexec_without_local_proxy()
     main()

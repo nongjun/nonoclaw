@@ -139,11 +139,9 @@ interface SchedulerOpts {
 	storePath: string;
 	defaultWorkspace: string;
 	onExecute: (job: CronJob) => Promise<{ status: "ok" | "error"; result?: string; error?: string }>;
-	onDelivery?: (job: CronJob, result: string) => Promise<void>;
+	onDelivery?: (job: CronJob, result: string, status: "ok" | "error") => Promise<void>;
 	log?: (msg: string) => void;
 }
-
-const MAX_CONSECUTIVE_ERRORS = 5;
 
 export class Scheduler {
 	private jobs = new Map<string, CronJob>();
@@ -335,13 +333,6 @@ export class Scheduler {
 			status = result.status;
 			error = result.error;
 			resultText = result.result;
-			if (status === "ok") {
-				if (result.result && this.opts.onDelivery) {
-					await this.opts.onDelivery(job, result.result).catch((e) =>
-						this.log(`投递失败 "${job.name}": ${e}`),
-					);
-				}
-			}
 		} catch (err) {
 			error = err instanceof Error ? err.message : String(err);
 		} finally {
@@ -362,10 +353,15 @@ export class Scheduler {
 		} else {
 			current.state.lastError = error;
 			current.state.consecutiveErrors = (current.state.consecutiveErrors || 0) + 1;
-			this.log(`任务 "${current.name}" 失败 (${current.state.consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}): ${error}`);
-			if (current.state.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-				current.enabled = false;
-				this.log(`任务 "${current.name}" 连续失败 ${MAX_CONSECUTIVE_ERRORS} 次，已自动禁用`);
+			this.log(`任务 "${current.name}" 失败 (连续 ${current.state.consecutiveErrors} 次): ${error}`);
+		}
+
+		if (this.opts.onDelivery) {
+			const content = status === "ok" ? resultText : error;
+			if (content) {
+				await this.opts.onDelivery(current, content, status).catch((e) =>
+					this.log(`投递失败 "${current.name}": ${e}`),
+				);
 			}
 		}
 

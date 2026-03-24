@@ -6,6 +6,7 @@
 
 - 快速扫描：有没有需要紧急处理的事？
 - 回顾 `.cursor/memory/` 最近的笔记，有待跟进的吗？
+- 扫一眼根目录 `cron-jobs.json`：enabled 任务的 `state.lastStatus` / `lastError`，连续失败或账单类错误需汇报主人
 - 如果有任务阻塞，记下缺什么，下次问主人
 
 ## 主动关怀
