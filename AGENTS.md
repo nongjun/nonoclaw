@@ -124,11 +124,11 @@ Gateway-Worker 双进程架构。`start.ts` 为服务入口，import `gateway.ts
 
 ### 3. 记忆闭环：经历 → 记录 → 蒸馏 → 召回
 
-每次会话都是全新实例，**文件就是记忆**。完整协议见 `memory-protocol.mdc`。
+每次会话都是全新实例，**文件就是记忆**。六层架构详见 [架构.md](架构.md)「记忆系统」，行为协议见 `memory-protocol.mdc`。
 
 **会话启动** → 读 SOUL.md / USER.md / 今日+昨日日记 / MEMORY.md
-**会话中** → 重要决策、教训、偏好立即写入 memory 文件
-**每 12h 自动蒸馏** → distill-chats.ts 提取对话 → Agent 提炼到 MEMORY.md
+**会话中** → 重要决策、教训、偏好立即写入 memory 文件 · `memory-tool search` 向量检索
+**每 12h 自动蒸馏** → distill-chats.ts 提取对话 → Agent 精炼到 MEMORY.md → 进入向量索引可被检索
 
 ### 4. 心跳闭环：巡检 → 发现 → 处理 → 汇报
 
