@@ -249,26 +249,40 @@ const scheduler = new Scheduler({
 	onExecute: async (job: CronJob) => {
 		try {
 			const ws = job.workspace || defaultWorkspace;
-			const lockKey = `cron:${job.id}`;
-			memory?.appendSessionLog(ws, "user", `[定时任务:${job.name}] ${job.message}`, config.CURSOR_MODEL);
-			const { result } = await execAgent(lockKey, ws, config.CURSOR_MODEL, job.message);
-			memory?.appendSessionLog(ws, "assistant", result.slice(0, 3000), config.CURSOR_MODEL);
+			const cronLockKey = `cron:${job.id}`;
+			const wsLockKey = getLockKey(ws);
+			const { result } = await withSessionLock(wsLockKey, async () => {
+				busySessions.add(wsLockKey);
+				try {
+					memory?.appendSessionLog(ws, "user", `[定时任务:${job.name}] ${job.message}`, config.CURSOR_MODEL);
+					const r = await execAgent(cronLockKey, ws, config.CURSOR_MODEL, job.message);
+					memory?.appendSessionLog(ws, "assistant", r.result.slice(0, 3000), config.CURSOR_MODEL);
+					return r.result;
+				} finally {
+					busySessions.delete(wsLockKey);
+				}
+			});
 			return { status: "ok" as const, result };
 		} catch (err) {
 			return { status: "error" as const, error: err instanceof Error ? err.message : String(err) };
 		}
 	},
-	onDelivery: async (job: CronJob, result: string) => {
+	onDelivery: async (job: CronJob, result: string, status: "ok" | "error") => {
 		pushCronReport(job.name, result);
 		if (!lastActiveChatId) {
 			console.warn("[调度] 无活跃会话，跳过发送");
 			return;
 		}
-		const title = `⏰ 定时任务: ${job.name}`;
-		if (result.length <= 3800) {
-			await sendCard(lastActiveChatId, result, { title, color: "purple" });
+		const isError = status === "error";
+		const title = isError ? `❌ 任务失败: ${job.name}` : `⏰ 定时任务: ${job.name}`;
+		const color = isError ? "red" : "purple";
+		const body = isError
+			? `**错误：** ${result}\n\n连续失败 ${job.state.consecutiveErrors || 1} 次${!job.enabled ? "，**已自动禁用**" : ""}`
+			: result;
+		if (body.length <= 3800) {
+			await sendCard(lastActiveChatId, body, { title, color });
 		} else {
-			await sendCard(lastActiveChatId, result.slice(0, 3800) + "\n\n...(已截断)", { title, color: "purple" });
+			await sendCard(lastActiveChatId, body.slice(0, 3800) + "\n\n...(已截断)", { title, color });
 		}
 	},
 	log: (msg: string) => console.log(`[调度] ${msg}`),
@@ -282,10 +296,18 @@ const heartbeat = new HeartbeatRunner({
 		workspaceDir: defaultWorkspace,
 	},
 	onExecute: async (prompt: string) => {
-		memory?.appendSessionLog(defaultWorkspace, "user", "[心跳检查] " + prompt.slice(0, 200), config.CURSOR_MODEL);
-		const { result } = await runAgent(defaultWorkspace, prompt);
-		memory?.appendSessionLog(defaultWorkspace, "assistant", result.slice(0, 3000), config.CURSOR_MODEL);
-		return result;
+		const wsLockKey = getLockKey(defaultWorkspace);
+		return withSessionLock(wsLockKey, async () => {
+			busySessions.add(wsLockKey);
+			try {
+				memory?.appendSessionLog(defaultWorkspace, "user", "[心跳检查] " + prompt.slice(0, 200), config.CURSOR_MODEL);
+				const { result } = await execAgent("heartbeat:check", defaultWorkspace, config.CURSOR_MODEL, prompt);
+				memory?.appendSessionLog(defaultWorkspace, "assistant", result.slice(0, 3000), config.CURSOR_MODEL);
+				return result;
+			} finally {
+				busySessions.delete(wsLockKey);
+			}
+		});
 	},
 	onDelivery: async (content: string) => {
 		if (!lastActiveChatId) {
@@ -365,16 +387,22 @@ async function runDistillCycle(): Promise<void> {
 			"如果对话内容太少或没有有价值的信息，直接回复 DISTILL_SKIP。",
 		].join("\n");
 
-		memory?.appendSessionLog(defaultWorkspace, "user", "[记忆蒸馏] 自动提取对话记忆", config.CURSOR_MODEL);
-
-		// 使用独立会话执行蒸馏，避免污染用户的活跃对话上下文
-		const agentPromise = execAgent(DISTILL_LOCK_KEY, defaultWorkspace, config.CURSOR_MODEL, distillPrompt);
-		const timeoutPromise = new Promise<never>((_, reject) =>
-			setTimeout(() => reject(new Error("蒸馏超时")), DISTILL_TIMEOUT),
-		);
-		const { result } = await Promise.race([agentPromise, timeoutPromise]);
-
-		memory?.appendSessionLog(defaultWorkspace, "assistant", result.slice(0, 3000), config.CURSOR_MODEL);
+		const wsLockKey = getLockKey(defaultWorkspace);
+		const { result } = await withSessionLock(wsLockKey, async () => {
+			busySessions.add(wsLockKey);
+			try {
+				memory?.appendSessionLog(defaultWorkspace, "user", "[记忆蒸馏] 自动提取对话记忆", config.CURSOR_MODEL);
+				const agentPromise = execAgent(DISTILL_LOCK_KEY, defaultWorkspace, config.CURSOR_MODEL, distillPrompt);
+				const timeoutPromise = new Promise<never>((_, reject) =>
+					setTimeout(() => reject(new Error("蒸馏超时")), DISTILL_TIMEOUT),
+				);
+				const r = await Promise.race([agentPromise, timeoutPromise]);
+				memory?.appendSessionLog(defaultWorkspace, "assistant", r.result.slice(0, 3000), config.CURSOR_MODEL);
+				return r.result;
+			} finally {
+				busySessions.delete(wsLockKey);
+			}
+		});
 
 		if (/DISTILL_SKIP/i.test(result)) {
 			console.log("[蒸馏] Agent 判断无有价值信息，跳过");
@@ -1006,6 +1034,157 @@ const BILLING_PATTERNS = [
 
 function isBillingError(text: string): boolean {
 	return BILLING_PATTERNS.some((p) => p.test(text));
+}
+
+// ── Mihomo 代理节点管理 ──────────────────────────
+const MIHOMO_API = "http://127.0.0.1:9097";
+const MIHOMO_GROUP = "Cursor";
+const MIHOMO_FETCH_TIMEOUT = 10_000;
+const PROXY_TEST_URL = "https://api2.cursor.sh";
+const PROXY_TEST_TIMEOUT = 8000;
+const PROXY_TEST_BATCH = 6;
+const PROXY_CACHE_MS = 5 * 60 * 1000;
+const PROXY_DELAY_GREEN = 1500;
+const PROXY_DELAY_YELLOW = 3000;
+const UPDATE_SUB_SCRIPT = "/opt/clash/update-subscription.sh";
+
+interface ProxyNodeInfo {
+	name: string;
+	delayMs: number | null; // null = 超时/失败
+}
+
+interface ProxyTestResult {
+	current: string;
+	nodes: ProxyNodeInfo[];
+	testedAt: number;
+}
+
+let proxyTestCache: ProxyTestResult | null = null;
+
+async function mihomoFetch(path: string, init?: RequestInit): Promise<Response> {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), MIHOMO_FETCH_TIMEOUT);
+	try {
+		const res = await fetch(`${MIHOMO_API}${path}`, { ...init, signal: controller.signal });
+		if (!res.ok) throw new Error(`Mihomo ${init?.method || "GET"} ${path}: HTTP ${res.status}`);
+		return res;
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+async function mihomoGetCurrentProxy(): Promise<{ current: string; all: string[] }> {
+	const res = await mihomoFetch(`/proxies/${encodeURIComponent(MIHOMO_GROUP)}`);
+	const data = await res.json() as Record<string, unknown>;
+	return {
+		current: (data.now as string) || "",
+		all: (data.all as string[]) || [],
+	};
+}
+
+async function mihomoSwitchProxy(name: string): Promise<boolean> {
+	try {
+		await mihomoFetch(`/proxies/${encodeURIComponent(MIHOMO_GROUP)}`, {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ name }),
+		});
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function mihomoTestNode(name: string): Promise<number | null> {
+	try {
+		const res = await fetch(
+			`${MIHOMO_API}/proxies/${encodeURIComponent(name)}/delay?url=${encodeURIComponent(PROXY_TEST_URL)}&timeout=${PROXY_TEST_TIMEOUT}`,
+			{ signal: AbortSignal.timeout(PROXY_TEST_TIMEOUT + 2000) },
+		);
+		if (!res.ok) return null;
+		const data = await res.json() as Record<string, unknown>;
+		const delay = data.delay as number;
+		return delay > 0 ? delay : null;
+	} catch {
+		return null;
+	}
+}
+
+async function mihomoTestAllNodes(onProgress?: (tested: number, total: number) => void): Promise<ProxyTestResult> {
+	const { current, all } = await mihomoGetCurrentProxy();
+	const results: ProxyNodeInfo[] = [];
+	let tested = 0;
+
+	for (let i = 0; i < all.length; i += PROXY_TEST_BATCH) {
+		const batch = all.slice(i, i + PROXY_TEST_BATCH);
+		const delays = await Promise.all(batch.map((name) => mihomoTestNode(name)));
+		for (let j = 0; j < batch.length; j++) {
+			results.push({ name: batch[j], delayMs: delays[j] });
+		}
+		tested += batch.length;
+		onProgress?.(tested, all.length);
+	}
+
+	const result: ProxyTestResult = { current, nodes: results, testedAt: Date.now() };
+	proxyTestCache = result;
+	return result;
+}
+
+function sortProxyNodes(nodes: ProxyNodeInfo[]): ProxyNodeInfo[] {
+	return [...nodes].sort((a, b) => {
+		if (a.delayMs === null && b.delayMs === null) return 0;
+		if (a.delayMs === null) return 1;
+		if (b.delayMs === null) return -1;
+		return a.delayMs - b.delayMs;
+	});
+}
+
+function fuzzyMatchProxy(input: string, nodes: ProxyNodeInfo[]): { exact?: ProxyNodeInfo; candidates: ProxyNodeInfo[] } {
+	const sorted = sortProxyNodes(nodes);
+	const q = input.toLowerCase().replace(/[\s_-]+/g, "");
+	const num = Number.parseInt(input, 10);
+	if (!Number.isNaN(num) && num >= 1 && num <= sorted.length) {
+		return { exact: sorted[num - 1], candidates: [] };
+	}
+	const exact = sorted.find((n) => n.name === input);
+	if (exact) return { exact, candidates: [] };
+	const candidates = sorted.filter((n) => n.name.toLowerCase().replace(/[\s_-]+/g, "").includes(q));
+	if (candidates.length === 1) return { exact: candidates[0], candidates: [] };
+	return { candidates };
+}
+
+function buildProxyListMarkdown(result: ProxyTestResult): string {
+	const sorted = sortProxyNodes(result.nodes);
+
+	const lines: string[] = [];
+	const ok = sorted.filter((n) => n.delayMs !== null);
+	const fail = sorted.filter((n) => n.delayMs === null);
+
+	lines.push(`**当前节点：** ${result.current}\n`);
+
+	if (ok.length > 0) {
+		lines.push("**可用节点（按延迟排序）：**\n");
+		for (let i = 0; i < ok.length; i++) {
+			const n = ok[i];
+			const isCurrent = n.name === result.current;
+			const idx = sorted.indexOf(n) + 1;
+			const bar = n.delayMs! < PROXY_DELAY_GREEN ? "🟢" : n.delayMs! < PROXY_DELAY_YELLOW ? "🟡" : "🔴";
+			lines.push(isCurrent
+				? `${bar} **${idx}. ${n.name}** · ${n.delayMs}ms ✅`
+				: `${bar} ${idx}. \`${n.name}\` · ${n.delayMs}ms`);
+		}
+	}
+
+	if (fail.length > 0) {
+		lines.push("", "**超时节点：**");
+		for (const n of fail) {
+			const idx = sorted.indexOf(n) + 1;
+			lines.push(`⚫ ${idx}. \`${n.name}\` · 超时`);
+		}
+	}
+
+	lines.push("", "---", "切换：`/节点 编号` 或 `/节点 关键词`　　刷新：`/节点 测试`　　更新订阅：`/节点 订阅`");
+	return lines.join("\n");
 }
 
 const childPids = new Set<number>();
@@ -1770,6 +1949,12 @@ async function handleInner(
 			"- `/心跳 开启/关闭/执行`",
 			"- `/心跳 间隔 分钟数`",
 			"",
+			"**代理节点**",
+			`- ${c("/节点", "/proxy")} — 查看所有代理节点并测速`,
+			"- `/节点 编号` — 切换到指定节点",
+			"- `/节点 测试` — 强制重新测速",
+			"- `/节点 订阅` — 更新代理订阅",
+			"",
 			"**项目路由**",
 			`发送 \`项目名:消息\` 指定工作区，如 \`openclaw:帮我看看这个bug\``,
 			`可用项目：${Object.keys(projectsConfig.projects).map((k) => `\`${k}\``).join("、")}（默认：\`${projectsConfig.default_project}\`）`,
@@ -1797,10 +1982,17 @@ async function handleInner(
 				return `全工作区索引（${stats.chunks} 块, ${stats.files} 文件, ${stats.cachedEmbeddings} 嵌入缓存）`;
 			})()
 			: "未启用";
+		let proxyStatus = "未知";
+		try {
+			const { current } = await mihomoGetCurrentProxy();
+			proxyStatus = current || "未选择";
+		} catch { proxyStatus = "Mihomo 不可达"; }
+
 		const statusText = [
 			`**模式：** ${IS_WORKER ? "Gateway + Worker" : "独立模式"}`,
 			`**模型：** ${config.CURSOR_MODEL}`,
 			`**Key：** ${keyPreview}`,
+			`**代理：** ${proxyStatus}`,
 			`**STT：** ${sttStatus}`,
 			`**记忆：** ${memStatus}`,
 			`**调度：** ${(() => { const s = scheduler.getStats(); return s.total > 0 ? `${s.enabled}/${s.total} 任务${s.nextRunIn ? `（下次: ${s.nextRunIn}）` : ""}` : "无任务"; })()}`,
@@ -1886,6 +2078,125 @@ async function handleInner(
 		const prev = config.CURSOR_MODEL;
 		await replyCard(messageId, `${prev} → **${input}**\n\n⚠️ 此模型不在当前 CLI 列表中，若名称有误可能导致执行失败。\n发送 \`/模型\` 查看完整列表。`, { title: "模型已切换", color: "yellow" });
 		console.log(`[指令] 模型切换(自定义): ${prev} → ${input}`);
+		return;
+	}
+
+	// /节点、/proxy、/代理 → 代理节点管理
+	const proxyMatch = text.match(/^\/(节点|proxy|代理|线路)[\s:：]*(.*)/i);
+	if (proxyMatch) {
+		const subCmd = proxyMatch[2].trim();
+		const isTest = /^(测试|test|刷新|refresh)$/i.test(subCmd);
+		const isSubscribe = /^(订阅|sub|subscribe|更新订阅|update)$/i.test(subCmd);
+
+		if (isSubscribe) {
+			const subCardId = await replyCard(messageId, "⏳ 正在更新代理订阅...\n\n拉取订阅 → 生成配置 → 重启 Mihomo", { title: "更新订阅中", color: "wathet" });
+			try {
+				const proc = spawn("bash", [UPDATE_SUB_SCRIPT], {
+					stdio: ["ignore", "pipe", "pipe"],
+					timeout: 90_000,
+				});
+				let stdout = "";
+				let stderr = "";
+				proc.stdout!.on("data", (c: Buffer) => { stdout += c.toString(); });
+				proc.stderr!.on("data", (c: Buffer) => { stderr += c.toString(); });
+				const exitCode = await new Promise<number | null>((res) => {
+					proc.on("close", res);
+					proc.on("error", () => res(1));
+				});
+				proxyTestCache = null;
+				if (exitCode === 0) {
+					const { all } = await mihomoGetCurrentProxy();
+					const body = `订阅更新成功 ✅\n\n${stdout.trim()}\n\n当前共 **${all.length}** 个节点可用。\n\n发送 \`/节点\` 查看列表并测速。`;
+					if (subCardId) await updateCard(subCardId, body, { title: "✅ 订阅已更新", color: "green" });
+					else await replyCard(messageId, body, { title: "✅ 订阅已更新", color: "green" });
+				} else {
+					const body = `订阅更新失败 ❌\n\n\`\`\`\n${(stderr || stdout).trim().slice(0, 1000)}\n\`\`\``;
+					if (subCardId) await updateCard(subCardId, body, { title: "订阅更新失败", color: "red" });
+					else await replyCard(messageId, body, { title: "订阅更新失败", color: "red" });
+				}
+			} catch (err) {
+				const body = `订阅更新异常: ${err instanceof Error ? err.message : err}`;
+				if (subCardId) await updateCard(subCardId, body, { title: "订阅更新失败", color: "red" });
+				else await replyCard(messageId, body, { color: "red" });
+			}
+			return;
+		}
+
+		// 无参数 或 /节点 测试 → 列表 + 测速
+		if (!subCmd || isTest) {
+			const forceTest = isTest || !proxyTestCache || (Date.now() - proxyTestCache.testedAt > PROXY_CACHE_MS);
+
+			if (forceTest) {
+				const loadingId = await replyCard(messageId, "⏳ 正在测试所有节点到 Cursor API 的延迟...", { title: "节点测速中", color: "wathet" });
+				const onProgress = loadingId
+					? (tested: number, total: number) => {
+							updateCard(loadingId, `⏳ 测试进度: ${tested}/${total} 节点...`, { title: "节点测速中", color: "wathet" }).catch(() => {});
+						}
+					: undefined;
+
+				try {
+					const result = await mihomoTestAllNodes(onProgress);
+					const body = buildProxyListMarkdown(result);
+					if (loadingId) {
+						const ok = await updateCardLong(loadingId, chatId, body, { title: "🌐 代理节点", color: "blue" });
+						if (!ok) await replyLongMessage(messageId, chatId, body, { title: "🌐 代理节点", color: "blue" });
+					} else {
+						await replyLongMessage(messageId, chatId, body, { title: "🌐 代理节点", color: "blue" });
+					}
+				} catch (err) {
+					const body = `节点测试失败: ${err instanceof Error ? err.message : err}\n\n可能 Mihomo 未运行，检查: \`systemctl status mihomo\``;
+					if (loadingId) await updateCard(loadingId, body, { title: "测试失败", color: "red" });
+					else await replyCard(messageId, body, { color: "red" });
+				}
+			} else {
+				try {
+					proxyTestCache!.current = (await mihomoGetCurrentProxy()).current;
+				} catch {
+					// Mihomo 查不到当前节点时用缓存值
+				}
+				const body = buildProxyListMarkdown(proxyTestCache!);
+				const cacheAge = Math.round((Date.now() - proxyTestCache!.testedAt) / 60000);
+				await replyLongMessage(messageId, chatId, body + `\n\n> 缓存结果（${cacheAge}分钟前），发 \`/节点 测试\` 重新测速`, { title: "🌐 代理节点", color: "blue" });
+			}
+			return;
+		}
+
+		// /节点 编号或关键词 → 切换
+		if (!proxyTestCache) {
+			const { current, all } = await mihomoGetCurrentProxy();
+			proxyTestCache = {
+				current,
+				nodes: all.map((name) => ({ name, delayMs: null })),
+				testedAt: 0,
+			};
+		}
+
+		const { exact, candidates } = fuzzyMatchProxy(subCmd, proxyTestCache.nodes);
+
+		if (exact) {
+			if (exact.name === proxyTestCache.current) {
+				await replyCard(messageId, `当前已是 **${exact.name}**，无需切换。`, { title: "当前节点", color: "blue" });
+				return;
+			}
+			const ok = await mihomoSwitchProxy(exact.name);
+			if (ok) {
+				proxyTestCache.current = exact.name;
+				const delayHint = exact.delayMs ? ` · 延迟 ${exact.delayMs}ms` : "";
+				await replyCard(messageId, `已切换到 **${exact.name}**${delayHint}\n\n即时生效，无需重启。`, { title: "✅ 节点已切换", color: "green" });
+				console.log(`[指令] 节点切换: → ${exact.name}`);
+			} else {
+				await replyCard(messageId, `切换失败，Mihomo API 返回错误。\n\n检查节点名是否有效: \`${exact.name}\``, { title: "切换失败", color: "red" });
+			}
+			return;
+		}
+
+		if (candidates.length > 1) {
+			const list = candidates.map((n) => `- \`${n.name}\`${n.delayMs ? ` · ${n.delayMs}ms` : ""}`).join("\n");
+			await replyCard(messageId, `「${subCmd}」匹配到多个节点：\n\n${list}\n\n请输入更精确的名称或编号。`, { title: "请精确选择", color: "orange" });
+			return;
+		}
+
+		await replyCard(messageId, `未找到匹配「${subCmd}」的节点。\n\n发送 \`/节点\` 查看完整列表。`, { title: "未找到", color: "orange" });
 		return;
 	}
 
@@ -2463,7 +2774,15 @@ ${list}
 				"你正在执行启动自检。严格按 .cursor/BOOT.md 指示操作。",
 				"如果无事可做，不需要回复任何内容。",
 			].join("\n");
-			const { result } = await runAgent(defaultWorkspace, bootPrompt);
+			const wsLockKey = getLockKey(defaultWorkspace);
+			const { result } = await withSessionLock(wsLockKey, async () => {
+				busySessions.add(wsLockKey);
+				try {
+					return await execAgent("boot:check", defaultWorkspace, config.CURSOR_MODEL, bootPrompt);
+				} finally {
+					busySessions.delete(wsLockKey);
+				}
+			});
 			const trimmed = result.trim();
 			if (trimmed && !/^(无输出|HEARTBEAT_OK)$/i.test(trimmed) && lastActiveChatId) {
 				await sendCard(lastActiveChatId, trimmed, { title: "🚀 启动自检", color: "wathet" });
@@ -2539,7 +2858,15 @@ ${list}
 				"你正在执行启动自检。严格按 .cursor/BOOT.md 指示操作。",
 				"如果无事可做，不需要回复任何内容。",
 			].join("\n");
-			const { result } = await runAgent(defaultWorkspace, bootPrompt);
+			const wsLockKey = getLockKey(defaultWorkspace);
+			const { result } = await withSessionLock(wsLockKey, async () => {
+				busySessions.add(wsLockKey);
+				try {
+					return await execAgent("boot:check", defaultWorkspace, config.CURSOR_MODEL, bootPrompt);
+				} finally {
+					busySessions.delete(wsLockKey);
+				}
+			});
 			const trimmed = result.trim();
 			if (trimmed && !/^(无输出|HEARTBEAT_OK)$/i.test(trimmed) && lastActiveChatId) {
 				await sendCard(lastActiveChatId, trimmed, { title: "🚀 启动自检", color: "wathet" });
