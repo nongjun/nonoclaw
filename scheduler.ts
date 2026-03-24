@@ -9,7 +9,7 @@
  * - 单 setTimeout 链（不使用 setInterval）
  * - 支持 at（一次性）、every（循环）、cron（表达式）三种调度
  * - 原子写入 + 备份
- * - 连续错误自动禁用
+ * - 连续错误计数（仅日志，不自动禁用）
  */
 
 import { readFileSync, writeFileSync, renameSync, existsSync, watchFile, unwatchFile } from "node:fs";
