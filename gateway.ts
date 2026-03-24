@@ -361,7 +361,7 @@ function spawnWorker(): void {
 	const child = spawn("bun", ["run", resolve(ROOT, "server.ts")], {
 		env: {
 			...process.env,
-			GATEWAY_URL: `http://localhost:${GATEWAY_PORT}`,
+			GATEWAY_URL: `http://127.0.0.1:${GATEWAY_PORT}`,
 			WORKER_PORT: String(WORKER_PORT),
 		},
 		stdio: ["ignore", "inherit", "inherit"],
@@ -487,6 +487,7 @@ dispatcher.register({
 // ── HTTP API 服务（供 Worker 回调）────────────────
 Bun.serve({
 	port: GATEWAY_PORT,
+	hostname: "0.0.0.0",
 	async fetch(req) {
 		const url = new URL(req.url);
 		const path = url.pathname;

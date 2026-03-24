@@ -247,24 +247,18 @@ const scheduler = new Scheduler({
 	storePath: cronStorePath,
 	defaultWorkspace,
 	onExecute: async (job: CronJob) => {
+		const ws = job.workspace || defaultWorkspace;
+		const cronLockKey = `cron:${job.id}`;
+		busySessions.add(cronLockKey);
 		try {
-			const ws = job.workspace || defaultWorkspace;
-			const cronLockKey = `cron:${job.id}`;
-			const wsLockKey = getLockKey(ws);
-			const { result } = await withSessionLock(wsLockKey, async () => {
-				busySessions.add(wsLockKey);
-				try {
-					memory?.appendSessionLog(ws, "user", `[定时任务:${job.name}] ${job.message}`, config.CURSOR_MODEL);
-					const r = await execAgent(cronLockKey, ws, config.CURSOR_MODEL, job.message);
-					memory?.appendSessionLog(ws, "assistant", r.result.slice(0, 3000), config.CURSOR_MODEL);
-					return r.result;
-				} finally {
-					busySessions.delete(wsLockKey);
-				}
-			});
-			return { status: "ok" as const, result };
+			memory?.appendSessionLog(ws, "user", `[定时任务:${job.name}] ${job.message}`, config.CURSOR_MODEL);
+			const r = await execAgent(cronLockKey, ws, config.CURSOR_MODEL, job.message);
+			memory?.appendSessionLog(ws, "assistant", r.result.slice(0, 3000), config.CURSOR_MODEL);
+			return { status: "ok" as const, result: r.result };
 		} catch (err) {
 			return { status: "error" as const, error: err instanceof Error ? err.message : String(err) };
+		} finally {
+			busySessions.delete(cronLockKey);
 		}
 	},
 	onDelivery: async (job: CronJob, result: string, status: "ok" | "error") => {
@@ -296,18 +290,16 @@ const heartbeat = new HeartbeatRunner({
 		workspaceDir: defaultWorkspace,
 	},
 	onExecute: async (prompt: string) => {
-		const wsLockKey = getLockKey(defaultWorkspace);
-		return withSessionLock(wsLockKey, async () => {
-			busySessions.add(wsLockKey);
-			try {
-				memory?.appendSessionLog(defaultWorkspace, "user", "[心跳检查] " + prompt.slice(0, 200), config.CURSOR_MODEL);
-				const { result } = await execAgent("heartbeat:check", defaultWorkspace, config.CURSOR_MODEL, prompt);
-				memory?.appendSessionLog(defaultWorkspace, "assistant", result.slice(0, 3000), config.CURSOR_MODEL);
-				return result;
-			} finally {
-				busySessions.delete(wsLockKey);
-			}
-		});
+		const lockKey = "heartbeat:check";
+		busySessions.add(lockKey);
+		try {
+			memory?.appendSessionLog(defaultWorkspace, "user", "[心跳检查] " + prompt.slice(0, 200), config.CURSOR_MODEL);
+			const { result } = await execAgent(lockKey, defaultWorkspace, config.CURSOR_MODEL, prompt);
+			memory?.appendSessionLog(defaultWorkspace, "assistant", result.slice(0, 3000), config.CURSOR_MODEL);
+			return result;
+		} finally {
+			busySessions.delete(lockKey);
+		}
 	},
 	onDelivery: async (content: string) => {
 		if (!lastActiveChatId) {
@@ -387,22 +379,20 @@ async function runDistillCycle(): Promise<void> {
 			"如果对话内容太少或没有有价值的信息，直接回复 DISTILL_SKIP。",
 		].join("\n");
 
-		const wsLockKey = getLockKey(defaultWorkspace);
-		const { result } = await withSessionLock(wsLockKey, async () => {
-			busySessions.add(wsLockKey);
-			try {
-				memory?.appendSessionLog(defaultWorkspace, "user", "[记忆蒸馏] 自动提取对话记忆", config.CURSOR_MODEL);
-				const agentPromise = execAgent(DISTILL_LOCK_KEY, defaultWorkspace, config.CURSOR_MODEL, distillPrompt);
-				const timeoutPromise = new Promise<never>((_, reject) =>
-					setTimeout(() => reject(new Error("蒸馏超时")), DISTILL_TIMEOUT),
-				);
-				const r = await Promise.race([agentPromise, timeoutPromise]);
-				memory?.appendSessionLog(defaultWorkspace, "assistant", r.result.slice(0, 3000), config.CURSOR_MODEL);
-				return r.result;
-			} finally {
-				busySessions.delete(wsLockKey);
-			}
-		});
+		busySessions.add(DISTILL_LOCK_KEY);
+		let result: string;
+		try {
+			memory?.appendSessionLog(defaultWorkspace, "user", "[记忆蒸馏] 自动提取对话记忆", config.CURSOR_MODEL);
+			const agentPromise = execAgent(DISTILL_LOCK_KEY, defaultWorkspace, config.CURSOR_MODEL, distillPrompt);
+			const timeoutPromise = new Promise<never>((_, reject) =>
+				setTimeout(() => reject(new Error("蒸馏超时")), DISTILL_TIMEOUT),
+			);
+			const r = await Promise.race([agentPromise, timeoutPromise]);
+			memory?.appendSessionLog(defaultWorkspace, "assistant", r.result.slice(0, 3000), config.CURSOR_MODEL);
+			result = r.result;
+		} finally {
+			busySessions.delete(DISTILL_LOCK_KEY);
+		}
 
 		if (/DISTILL_SKIP/i.test(result)) {
 			console.log("[蒸馏] Agent 判断无有价值信息，跳过");
@@ -1416,7 +1406,8 @@ function getSessionHistory(workspace: string, limit = 10): SessionEntry[] {
 		.slice(0, limit);
 }
 
-// 同一 session 的消息串行执行；不同 session（即使同工作区）可并行
+// 同一 session 的消息串行执行（飞书对话需要 --resume 同一会话）
+// 定时任务/心跳/蒸馏/启动自检各自独立 lockKey，不经过此锁，可并行
 const sessionLocks = new Map<string, Promise<void>>();
 async function withSessionLock<T>(lockKey: string, fn: () => Promise<T>): Promise<T> {
 	const prev = sessionLocks.get(lockKey) || Promise.resolve();
@@ -2774,20 +2765,17 @@ ${list}
 				"你正在执行启动自检。严格按 .cursor/BOOT.md 指示操作。",
 				"如果无事可做，不需要回复任何内容。",
 			].join("\n");
-			const wsLockKey = getLockKey(defaultWorkspace);
-			const { result } = await withSessionLock(wsLockKey, async () => {
-				busySessions.add(wsLockKey);
-				try {
-					return await execAgent("boot:check", defaultWorkspace, config.CURSOR_MODEL, bootPrompt);
-				} finally {
-					busySessions.delete(wsLockKey);
+			busySessions.add("boot:check");
+			try {
+				const { result } = await execAgent("boot:check", defaultWorkspace, config.CURSOR_MODEL, bootPrompt);
+				const trimmed = result.trim();
+				if (trimmed && !/^(无输出|HEARTBEAT_OK)$/i.test(trimmed) && lastActiveChatId) {
+					await sendCard(lastActiveChatId, trimmed, { title: "🚀 启动自检", color: "wathet" });
 				}
-			});
-			const trimmed = result.trim();
-			if (trimmed && !/^(无输出|HEARTBEAT_OK)$/i.test(trimmed) && lastActiveChatId) {
-				await sendCard(lastActiveChatId, trimmed, { title: "🚀 启动自检", color: "wathet" });
+				console.log("[启动] .cursor/BOOT.md 自检完成");
+			} finally {
+				busySessions.delete("boot:check");
 			}
-			console.log("[启动] .cursor/BOOT.md 自检完成");
 		} catch (e) {
 			console.warn(`[启动] .cursor/BOOT.md 执行失败: ${e}`);
 		}
@@ -2798,6 +2786,7 @@ if (IS_WORKER) {
 	// ── Worker 模式 HTTP 服务 ─────────────────────
 	const workerServer = Bun.serve({
 		port: WORKER_PORT,
+		hostname: "0.0.0.0",
 		async fetch(req) {
 			const url = new URL(req.url);
 			if (req.method === "POST" && url.pathname === "/message") {
@@ -2858,20 +2847,17 @@ ${list}
 				"你正在执行启动自检。严格按 .cursor/BOOT.md 指示操作。",
 				"如果无事可做，不需要回复任何内容。",
 			].join("\n");
-			const wsLockKey = getLockKey(defaultWorkspace);
-			const { result } = await withSessionLock(wsLockKey, async () => {
-				busySessions.add(wsLockKey);
-				try {
-					return await execAgent("boot:check", defaultWorkspace, config.CURSOR_MODEL, bootPrompt);
-				} finally {
-					busySessions.delete(wsLockKey);
+			busySessions.add("boot:check");
+			try {
+				const { result } = await execAgent("boot:check", defaultWorkspace, config.CURSOR_MODEL, bootPrompt);
+				const trimmed = result.trim();
+				if (trimmed && !/^(无输出|HEARTBEAT_OK)$/i.test(trimmed) && lastActiveChatId) {
+					await sendCard(lastActiveChatId, trimmed, { title: "🚀 启动自检", color: "wathet" });
 				}
-			});
-			const trimmed = result.trim();
-			if (trimmed && !/^(无输出|HEARTBEAT_OK)$/i.test(trimmed) && lastActiveChatId) {
-				await sendCard(lastActiveChatId, trimmed, { title: "🚀 启动自检", color: "wathet" });
+				console.log("[启动] .cursor/BOOT.md 自检完成");
+			} finally {
+				busySessions.delete("boot:check");
 			}
-			console.log("[启动] .cursor/BOOT.md 自检完成");
 		} catch (e) {
 			console.warn(`[启动] .cursor/BOOT.md 执行失败: ${e}`);
 		}
