@@ -1008,7 +1008,6 @@ const BILLING_PATTERNS = [
 	/unpaid invoice/i,
 	/pay your invoice/i,
 	/resume requests/i,
-	/billing/i,
 	/insufficient.*(balance|credit|fund|quota)/i,
 	/exceeded.*limit/i,
 	/payment.*required/i,
@@ -1018,9 +1017,6 @@ const BILLING_PATTERNS = [
 	/plan.*expired/i,
 	/resource_exhausted/i,
 	/402/,
-	/费用不足/,
-	/余额不足/,
-	/API.*额度|请求.*额度|配额.*超|额度.*已[用耗]/,
 ];
 
 function isBillingError(text: string): boolean {
@@ -1660,15 +1656,9 @@ function execAgent(
 
 			console.log(`[Agent输出] resultText=${resultText.length}c finalSegment=${finalSegment.length}c assistantBuf=${assistantBuf.length}c events=${assistantEventCount}`);
 
-			if (code !== 0 && code !== null) {
-				if (!resultText) {
-					reject(new Error(strip(stderr) || output));
-					return;
-				}
-				if (isBillingError(output) || isBillingError(stderr)) {
-					reject(new Error(output));
-					return;
-				}
+			if (code !== 0 && code !== null && !resultText) {
+				reject(new Error(strip(stderr) || output));
+				return;
 			}
 			res({ result: output, sessionId });
 		});

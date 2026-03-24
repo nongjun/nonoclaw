@@ -111,8 +111,8 @@
       "createdAt": "2026-03-24T06:00:00+08:00",
       "updatedAt": "2026-03-24T06:00:00+08:00",
       "state": {
-        "nextRunAtMs": 1774361444861,
-        "lastRunAtMs": 1774357844861,
+        "nextRunAtMs": 1774372090330,
+        "lastRunAtMs": 1774368490330,
         "lastStatus": "ok",
         "consecutiveErrors": 0
       }
