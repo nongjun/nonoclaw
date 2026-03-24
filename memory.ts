@@ -337,7 +337,30 @@ export class MemoryManager {
 		};
 
 		walk(root);
+		this.scanMemoryPaths(root, result);
 		return result;
+	}
+
+	/** 显式扫描 .cursor/ 下的记忆文件（主 walk 跳过所有点目录） */
+	private scanMemoryPaths(root: string, result: Map<string, { content: string; hash: string; size: number }>): void {
+		const tryAdd = (fullPath: string) => {
+			try {
+				const stat = statSync(fullPath);
+				if (!stat.isFile() || stat.size === 0 || stat.size > MemoryManager.MAX_FILE_BYTES) return;
+				const content = readFileSync(fullPath, "utf-8");
+				if (content.trim().length < 20) return;
+				result.set(relative(root, fullPath), { content, hash: textHash(content), size: stat.size });
+			} catch { /* 文件不存在或不可读 */ }
+		};
+
+		tryAdd(resolve(root, ".cursor/MEMORY.md"));
+
+		try {
+			for (const name of readdirSync(resolve(root, ".cursor/memory"))) {
+				if (!name.endsWith(".md") || name.startsWith("_")) continue;
+				tryAdd(resolve(root, ".cursor/memory", name));
+			}
+		} catch { /* 目录不存在 */ }
 	}
 
 	private diffFiles(disk: Map<string, { hash: string }>): { changed: string[]; deleted: string[] } {
