@@ -384,10 +384,11 @@ async function runDistillCycle(): Promise<void> {
 		try {
 			memory?.appendSessionLog(defaultWorkspace, "user", "[记忆蒸馏] 自动提取对话记忆", config.CURSOR_MODEL);
 			const agentPromise = execAgent(DISTILL_LOCK_KEY, defaultWorkspace, config.CURSOR_MODEL, distillPrompt);
-			const timeoutPromise = new Promise<never>((_, reject) =>
-				setTimeout(() => reject(new Error("蒸馏超时")), DISTILL_TIMEOUT),
-			);
-			const r = await Promise.race([agentPromise, timeoutPromise]);
+			let timer: ReturnType<typeof setTimeout>;
+			const timeoutPromise = new Promise<never>((_, reject) => {
+				timer = setTimeout(() => reject(new Error("蒸馏超时")), DISTILL_TIMEOUT);
+			});
+			const r = await Promise.race([agentPromise, timeoutPromise]).finally(() => clearTimeout(timer!));
 			memory?.appendSessionLog(defaultWorkspace, "assistant", r.result.slice(0, 3000), config.CURSOR_MODEL);
 			result = r.result;
 		} finally {

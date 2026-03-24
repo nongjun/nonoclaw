@@ -71,10 +71,11 @@
       "createdAt": "2026-03-24T05:30:00+08:00",
       "updatedAt": "2026-03-24T21:52:00+08:00",
       "state": {
-        "nextRunAtMs": 1774367584547,
-        "consecutiveErrors": 0,
-        "lastRunAtMs": 1774360384547,
-        "lastStatus": "ok"
+        "nextRunAtMs": 1774375102350,
+        "consecutiveErrors": 1,
+        "lastRunAtMs": 1774367902350,
+        "lastStatus": "error",
+        "lastError": "S: Connection stalled"
       }
     },
     {
