@@ -13,11 +13,8 @@ alwaysApply: true
 | 心跳闭环 | `heartbeat-protocol.mdc`, `.cursor/HEARTBEAT.md` | 自主巡检：定期检查 → 发现问题 → 飞书通知 |
 | 蒸馏闭环 | `distill-chats.ts`, server.ts 中蒸馏调度逻辑 | 自动从对话记录提炼记忆，每 12h 执行 |
 | 调度闭环 | `scheduler-protocol.mdc`, `cron-jobs.json` | 定时任务：自然语言创建 → 热加载 → 自动执行 |
-| 会话协议 | `soul.mdc`, `agent-identity.mdc`, `.cursor/BOOTSTRAP.md` | 出生仪式 + 每次会话启动读取流程 |
-| 身份系统 | `user-context.mdc`, `workspace-rules.mdc` | 用户画像 + 工作区安全边界 |
-| 工具能力 | `tools.mdc`, `cursor-capabilities.mdc` | Agent 能力清单 + 决策树 |
-| Bun 规范 | `use-bun-instead-of-node-vite-npm-pnpm.mdc` | 运行时强制约束 |
-| 工程哲学 | `engineering-philosophy.mdc` | 根因驱动、安全底线、编码标准 |
+| 会话与身份 | `基础规则.mdc`, `.cursor/BOOT.md` | 启动自检 + 每次会话核心行为 |
+| Bun 规范 | `Bun规范.mdc` | 运行时强制约束 |
 | 工作区模板 | `templates/` 目录 | 新实例的出厂 DNA，只含核心闭环 |
 
 ## 保护规则

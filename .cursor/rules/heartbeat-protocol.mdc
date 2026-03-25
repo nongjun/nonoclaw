@@ -1,7 +1,9 @@
 ---
-description: 心跳协议 — 系统定期触发你做检查和后台维护
+description: 心跳协议 — 系统定期触发你做检查和后台维护。涉及心跳、HEARTBEAT、巡检时加载。
 globs:
-alwaysApply: true
+  - "**/heartbeat*"
+  - "**/HEARTBEAT*"
+alwaysApply: false
 ---
 
 # 心跳协议

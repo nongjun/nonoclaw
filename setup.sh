@@ -222,10 +222,6 @@ TEMPLATE_RULES=(
     .cursor/rules/scheduler-protocol.mdc
     .cursor/rules/heartbeat-protocol.mdc
     .cursor/rules/cursor-capabilities.mdc
-    .cursor/rules/核心体系保护.mdc
-    .cursor/rules/项目工程经验.mdc
-    .cursor/rules/use-bun-instead-of-node-vite-npm-pnpm.mdc
-    .cursor/rules/engineering-philosophy.mdc
 )
 
 mkdir -p "$DEFAULT_WS/.cursor/memory" "$DEFAULT_WS/.cursor/rules" "$DEFAULT_WS/.cursor/skills"
