@@ -228,29 +228,6 @@ function persistChatId(chatId: string): void {
 	try { writeFileSync(LAST_CHAT_PATH, chatId); } catch {}
 }
 
-function dedup(text: string): string {
-	const t = text.trim();
-	if (t.length < 40) return t;
-	const half = Math.floor(t.length / 2);
-	for (let offset = -20; offset <= 20; offset++) {
-		const mid = half + offset;
-		if (mid < 10 || mid >= t.length - 10) continue;
-		if (t.slice(0, mid).trim() === t.slice(mid).trim()) return t.slice(0, mid).trim();
-	}
-	const lines = t.split("\n");
-	if (lines.length >= 6) {
-		const lh = Math.floor(lines.length / 2);
-		for (let off = -2; off <= 2; off++) {
-			const m = lh + off;
-			if (m < 2 || m >= lines.length - 2) continue;
-			const a = lines.slice(0, m).join("\n").trim();
-			const b = lines.slice(m).join("\n").trim();
-			if (a === b) return a;
-		}
-	}
-	return t;
-}
-
 // ── 定时任务报告队列（注入飞书会话上下文）────
 interface CronReport {
 	name: string;
@@ -294,8 +271,7 @@ const scheduler = new Scheduler({
 		busySessions.add(cronLockKey);
 		try {
 			const r = await execAgent(cronLockKey, ws, config.CURSOR_MODEL, job.message);
-			const delivery = dedup(r.lastSegment || r.result);
-			return { status: "ok" as const, result: delivery, sessionId: r.sessionId };
+			return { status: "ok" as const, result: r.lastSegment || r.result, sessionId: r.sessionId };
 		} catch (err) {
 			return { status: "error" as const, error: err instanceof Error ? err.message : String(err) };
 		} finally {
@@ -1570,7 +1546,6 @@ function execAgent(
 		let sessionId: string | undefined;
 		let phase: AgentProgress["phase"] = "thinking";
 		let thinkingBuf = "";
-		let assistantBuf = "";
 		let lastSegment = "";
 		let assistantEventCount = 0;
 		let toolBuf = "";
@@ -1590,9 +1565,9 @@ function execAgent(
 			if (phase === "thinking") return thinkingBuf.slice(-200);
 			if (phase === "tool_call") {
 				const lines = toolBuf.split("\n").filter(l => l.trim());
-				return lines.slice(-6).join("\n") || assistantBuf.slice(-300);
+				return lines.slice(-6).join("\n") || lastSegment.slice(-300);
 			}
-			return assistantBuf.slice(-300);
+			return lastSegment.slice(-300);
 		}
 
 		const timer = setInterval(() => {
@@ -1623,19 +1598,18 @@ function execAgent(
 					phase = "thinking";
 					if (ev.text) thinkingBuf += ev.text;
 					break;
-			case "assistant":
-				if (phase !== "responding") { toolBuf = ""; lastSegment = ""; }
-				phase = "responding";
-				assistantEventCount++;
-				if (ev.message?.content) {
-					for (const c of ev.message.content) {
-						if (c.type === "text" && c.text) {
-							assistantBuf += c.text;
-							lastSegment += c.text;
-						}
-					}
+		case "assistant":
+			if (phase !== "responding") { toolBuf = ""; lastSegment = ""; }
+			phase = "responding";
+			assistantEventCount++;
+			if (ev.message?.content) {
+				let eventText = "";
+				for (const c of ev.message.content) {
+					if (c.type === "text" && c.text) eventText += c.text;
 				}
-				break;
+				if (eventText) lastSegment = eventText;
+			}
+			break;
 				case "tool_call":
 					phase = "tool_call";
 					lastSegment = "";
@@ -1690,12 +1664,9 @@ function execAgent(
 			if (lineBuf.trim()) processLine(lineBuf);
 
 			const finalSegment = strip(lastSegment);
-			// resultText（CLI 权威输出）优先；仅在 CLI 未提供 result 时回退到累积文本
-			const output = resultText || finalSegment || strip(assistantBuf) || strip(stderr) || "(无输出)";
+			const output = resultText || finalSegment || strip(stderr) || "(无输出)";
 
-			console.log(`[Agent输出] resultText=${resultText.length}c finalSegment=${finalSegment.length}c assistantBuf=${assistantBuf.length}c events=${assistantEventCount}`);
-			console.log(`[Agent输出-result] ${resultText.slice(0, 300)}`);
-			console.log(`[Agent输出-lastSeg] ${finalSegment.slice(0, 300)}`);
+			console.log(`[Agent输出] resultText=${resultText.length}c lastSegment=${finalSegment.length}c events=${assistantEventCount}`);
 
 			if (code !== 0 && code !== null && !resultText) {
 				reject(new Error(strip(stderr) || output));
@@ -2413,7 +2384,7 @@ async function handleInner(
 				manualRunJobs.delete(job.id);
 				await replyCard(messageId, result.error || "任务正在执行中", { title: "⏭ 已跳过", color: "orange" });
 			} else if (result.status === "ok") {
-				const body = dedup(result.result || "") || `执行成功: **${job.name}**`;
+				const body = result.result || `执行成功: **${job.name}**`;
 				await replyCard(messageId, body, { title: `✅ ${job.name}`, color: "green" });
 			} else {
 				await replyCard(messageId, `执行失败: ${result.error || "未知错误"}`, { title: "❌ 失败", color: "red" });
