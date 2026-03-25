@@ -138,8 +138,8 @@ function computeNextRun(job: CronJob, now: number): number | undefined {
 interface SchedulerOpts {
 	storePath: string;
 	defaultWorkspace: string;
-	onExecute: (job: CronJob) => Promise<{ status: "ok" | "error"; result?: string; error?: string }>;
-	onDelivery?: (job: CronJob, result: string, status: "ok" | "error") => Promise<void>;
+	onExecute: (job: CronJob) => Promise<{ status: "ok" | "error"; result?: string; error?: string; sessionId?: string }>;
+	onDelivery?: (job: CronJob, result: string, status: "ok" | "error", sessionId?: string) => Promise<void>;
 	log?: (msg: string) => void;
 }
 
@@ -243,7 +243,7 @@ export class Scheduler {
 
 	getJob(id: string): CronJob | undefined { return this.jobs.get(id); }
 
-	async run(id: string): Promise<{ status: string; error?: string }> {
+	async run(id: string): Promise<{ status: string; error?: string; result?: string }> {
 		const job = this.jobs.get(id);
 		if (!job) return { status: "error", error: "任务不存在" };
 		return this.executeJob(job);
@@ -315,10 +315,10 @@ export class Scheduler {
 		}
 	}
 
-	private async executeJob(job: CronJob): Promise<{ status: string; error?: string }> {
+	private async executeJob(job: CronJob): Promise<{ status: string; error?: string; result?: string }> {
 		if (this.executingJobs.has(job.id)) {
 			this.log(`跳过 "${job.name}"：正在执行中`);
-			return { status: "skipped" };
+			return { status: "skipped", error: "任务正在执行中，请稍后再试" };
 		}
 		this.executingJobs.add(job.id);
 		const now = Date.now();
@@ -327,12 +327,14 @@ export class Scheduler {
 		let status: "ok" | "error" = "error";
 		let error: string | undefined;
 		let resultText: string | undefined;
+		let sessionId: string | undefined;
 
 		try {
 			const result = await this.opts.onExecute(job);
 			status = result.status;
 			error = result.error;
 			resultText = result.result;
+			sessionId = result.sessionId;
 		} catch (err) {
 			error = err instanceof Error ? err.message : String(err);
 		} finally {
@@ -359,7 +361,7 @@ export class Scheduler {
 		if (this.opts.onDelivery) {
 			const content = status === "ok" ? resultText : error;
 			if (content) {
-				await this.opts.onDelivery(current, content, status).catch((e) =>
+				await this.opts.onDelivery(current, content, status, sessionId).catch((e) =>
 					this.log(`投递失败 "${current.name}": ${e}`),
 				);
 			}
@@ -373,7 +375,7 @@ export class Scheduler {
 		}
 
 		await this.save();
-		return { status, error };
+		return { status, error, result: resultText };
 	}
 
 	private async loadFromDisk(): Promise<void> {

@@ -19,6 +19,8 @@ if (!HOME) throw new Error("$HOME is not set");
 
 const ENV_PATH = resolve(import.meta.dirname, ".env");
 const AGENT_BIN = process.env.AGENT_BIN || resolve(HOME, ".local/bin/agent");
+const PROXYCHAINS_BIN = "/usr/bin/proxychains4";
+const PROXYCHAINS_CONF = "/opt/clash/proxychains.conf";
 
 // ── .env 热更换 ──────────────────────────────────
 interface EnvConfig {
@@ -114,7 +116,8 @@ function runAgent(prompt: string): Promise<string> {
 	const workspace = resolve(import.meta.dirname);
 
 	return new Promise((res, reject) => {
-		const child = spawn(AGENT_BIN, [
+		const child = spawn(PROXYCHAINS_BIN, [
+			"-f", PROXYCHAINS_CONF, "-q", AGENT_BIN,
 			"-p", "--force", "--trust", "--approve-mcps",
 			"--workspace", workspace,
 			"--model", config.CURSOR_MODEL,

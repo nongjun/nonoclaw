@@ -30,6 +30,8 @@ const ROOT = import.meta.dirname;
 const ENV_PATH = resolve(ROOT, ".env");
 const PROJECTS_PATH = resolve(ROOT, "projects.json");
 const AGENT_BIN = process.env.AGENT_BIN || resolve(HOME, ".local/bin/agent");
+const PROXYCHAINS_BIN = "/usr/bin/proxychains4";
+const PROXYCHAINS_CONF = "/opt/clash/proxychains.conf";
 const INBOX_DIR = resolve(ROOT, "inbox");
 
 mkdirSync(INBOX_DIR, { recursive: true });
@@ -141,7 +143,6 @@ const WORKSPACE_RULES = [
 
 function ensureWorkspace(wsPath: string): boolean {
 	mkdirSync(resolve(wsPath, ".cursor/memory"), { recursive: true });
-	mkdirSync(resolve(wsPath, ".cursor/sessions"), { recursive: true });
 	mkdirSync(resolve(wsPath, ".cursor/rules"), { recursive: true });
 	mkdirSync(resolve(wsPath, ".cursor/skills"), { recursive: true });
 
@@ -227,21 +228,62 @@ function persistChatId(chatId: string): void {
 	try { writeFileSync(LAST_CHAT_PATH, chatId); } catch {}
 }
 
-// ── 最近一条定时任务报告（始终注入飞书会话）────
-let lastCronReport: { name: string; result: string; ts: number } | null = null;
-
-function pushCronReport(name: string, result: string) {
-	lastCronReport = { name, result, ts: Date.now() };
+function dedup(text: string): string {
+	const t = text.trim();
+	if (t.length < 40) return t;
+	const half = Math.floor(t.length / 2);
+	for (let offset = -20; offset <= 20; offset++) {
+		const mid = half + offset;
+		if (mid < 10 || mid >= t.length - 10) continue;
+		if (t.slice(0, mid).trim() === t.slice(mid).trim()) return t.slice(0, mid).trim();
+	}
+	const lines = t.split("\n");
+	if (lines.length >= 6) {
+		const lh = Math.floor(lines.length / 2);
+		for (let off = -2; off <= 2; off++) {
+			const m = lh + off;
+			if (m < 2 || m >= lines.length - 2) continue;
+			const a = lines.slice(0, m).join("\n").trim();
+			const b = lines.slice(m).join("\n").trim();
+			if (a === b) return a;
+		}
+	}
+	return t;
 }
 
-function getRecentCronContext(): string {
-	if (!lastCronReport) return "";
-	const ago = Math.round((Date.now() - lastCronReport.ts) / 60000);
-	return `[上一条定时任务报告（${lastCronReport.name}，${ago}分钟前），供你理解用户指示的上下文]\n\n${lastCronReport.result}\n\n---\n\n`;
+// ── 定时任务报告队列（注入飞书会话上下文）────
+interface CronReport {
+	name: string;
+	summary: string;
+	transcriptPath: string | null;
+	ts: number;
+}
+
+const pendingCronReports: CronReport[] = [];
+
+function pushCronReport(name: string, summary: string, workspace: string, sessionId?: string) {
+	const transcriptPath = sessionId
+		? resolve(workspace, ".cursor/projects/root/agent-transcripts", sessionId, `${sessionId}.jsonl`)
+		: null;
+	pendingCronReports.push({ name, summary, transcriptPath, ts: Date.now() });
+	if (pendingCronReports.length > 50) pendingCronReports.splice(0, pendingCronReports.length - 50);
+}
+
+function consumeCronContext(): string {
+	if (pendingCronReports.length === 0) return "";
+	const reports = pendingCronReports.splice(0);
+	const lines = reports.map((r) => {
+		const ago = Math.round((Date.now() - r.ts) / 60000);
+		let entry = `### ${r.name}（${ago}分钟前）\n${r.summary}`;
+		if (r.transcriptPath) entry += `\n完整对话记录：${r.transcriptPath}`;
+		return entry;
+	});
+	return `[以下是你上次对话后执行的 ${reports.length} 条定时任务报告，供你理解用户指示的上下文]\n\n${lines.join("\n\n---\n\n")}\n\n---\n\n`;
 }
 
 // ── 定时任务调度器 ────────────────────────────────
 const cronStorePath = resolve(defaultWorkspace, "cron-jobs.json");
+const manualRunJobs = new Set<string>();
 
 const scheduler = new Scheduler({
 	storePath: cronStorePath,
@@ -251,18 +293,18 @@ const scheduler = new Scheduler({
 		const cronLockKey = `cron:${job.id}`;
 		busySessions.add(cronLockKey);
 		try {
-			memory?.appendSessionLog(ws, "user", `[定时任务:${job.name}] ${job.message}`, config.CURSOR_MODEL);
 			const r = await execAgent(cronLockKey, ws, config.CURSOR_MODEL, job.message);
-			memory?.appendSessionLog(ws, "assistant", r.result.slice(0, 3000), config.CURSOR_MODEL);
-			return { status: "ok" as const, result: r.result };
+			const delivery = dedup(r.lastSegment || r.result);
+			return { status: "ok" as const, result: delivery, sessionId: r.sessionId };
 		} catch (err) {
 			return { status: "error" as const, error: err instanceof Error ? err.message : String(err) };
 		} finally {
 			busySessions.delete(cronLockKey);
 		}
 	},
-	onDelivery: async (job: CronJob, result: string, status: "ok" | "error") => {
-		pushCronReport(job.name, result);
+	onDelivery: async (job: CronJob, result: string, status: "ok" | "error", sessionId?: string) => {
+		pushCronReport(job.name, result, job.workspace || defaultWorkspace, sessionId);
+		if (manualRunJobs.delete(job.id)) return;
 		if (!lastActiveChatId) {
 			console.warn("[调度] 无活跃会话，跳过发送");
 			return;
@@ -293,9 +335,7 @@ const heartbeat = new HeartbeatRunner({
 		const lockKey = "heartbeat:check";
 		busySessions.add(lockKey);
 		try {
-			memory?.appendSessionLog(defaultWorkspace, "user", "[心跳检查] " + prompt.slice(0, 200), config.CURSOR_MODEL);
 			const { result } = await execAgent(lockKey, defaultWorkspace, config.CURSOR_MODEL, prompt);
-			memory?.appendSessionLog(defaultWorkspace, "assistant", result.slice(0, 3000), config.CURSOR_MODEL);
 			return result;
 		} finally {
 			busySessions.delete(lockKey);
@@ -382,14 +422,12 @@ async function runDistillCycle(): Promise<void> {
 		busySessions.add(DISTILL_LOCK_KEY);
 		let result: string;
 		try {
-			memory?.appendSessionLog(defaultWorkspace, "user", "[记忆蒸馏] 自动提取对话记忆", config.CURSOR_MODEL);
 			const agentPromise = execAgent(DISTILL_LOCK_KEY, defaultWorkspace, config.CURSOR_MODEL, distillPrompt);
 			let timer: ReturnType<typeof setTimeout>;
 			const timeoutPromise = new Promise<never>((_, reject) => {
 				timer = setTimeout(() => reject(new Error("蒸馏超时")), DISTILL_TIMEOUT);
 			});
 			const r = await Promise.race([agentPromise, timeoutPromise]).finally(() => clearTimeout(timer!));
-			memory?.appendSessionLog(defaultWorkspace, "assistant", r.result.slice(0, 3000), config.CURSOR_MODEL);
 			result = r.result;
 		} finally {
 			busySessions.delete(DISTILL_LOCK_KEY);
@@ -894,7 +932,7 @@ function parseAgentModelsOutput(raw: string): AgentModelEntry[] {
 
 function fetchAgentModelsFromCli(apiKey: string): Promise<AgentModelEntry[]> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(AGENT_BIN, ["models"], {
+		const child = spawn(PROXYCHAINS_BIN, ["-f", PROXYCHAINS_CONF, "-q", AGENT_BIN, "models"], {
 			env: { ...process.env, CURSOR_API_KEY: apiKey },
 			stdio: ["ignore", "pipe", "pipe"],
 		});
@@ -1344,7 +1382,8 @@ async function generateSessionTitle(workspace: string, sessionId: string, prompt
 	try {
 		const context = `用户: ${prompt.slice(0, 200)}\n\nAI回复摘要: ${result.slice(0, 500)}`;
 		const titlePrompt = `根据以下对话，生成一个简短的中文标题。要求：必须使用中文，4-20个字，不加标点，不加引号，不加书名号，直接输出标题，不要输出任何其它内容。\n\n${context}`;
-		const child = spawn(AGENT_BIN, [
+		const child = spawn(PROXYCHAINS_BIN, [
+			"-f", PROXYCHAINS_CONF, "-q", AGENT_BIN,
 			"-p", "--force", "--trust",
 			"--model", "auto",
 			"--output-format", "text",
@@ -1499,7 +1538,7 @@ function execAgent(
 		sessionId?: string;
 		onProgress?: (p: AgentProgress) => void;
 	},
-): Promise<{ result: string; sessionId?: string }> {
+): Promise<{ result: string; lastSegment: string; sessionId?: string }> {
 	return new Promise((res, reject) => {
 		const args = [
 			"-p", "--force", "--trust", "--approve-mcps",
@@ -1514,7 +1553,7 @@ function execAgent(
 		}
 		args.push("--", prompt);
 
-		const child = spawn(AGENT_BIN, args, {
+		const child = spawn(PROXYCHAINS_BIN, ["-f", PROXYCHAINS_CONF, "-q", AGENT_BIN, ...args], {
 			env: { ...process.env, CURSOR_API_KEY: config.CURSOR_API_KEY },
 			stdio: ["ignore", "pipe", "pipe"],
 		});
@@ -1655,12 +1694,14 @@ function execAgent(
 			const output = resultText || finalSegment || strip(assistantBuf) || strip(stderr) || "(无输出)";
 
 			console.log(`[Agent输出] resultText=${resultText.length}c finalSegment=${finalSegment.length}c assistantBuf=${assistantBuf.length}c events=${assistantEventCount}`);
+			console.log(`[Agent输出-result] ${resultText.slice(0, 300)}`);
+			console.log(`[Agent输出-lastSeg] ${finalSegment.slice(0, 300)}`);
 
 			if (code !== 0 && code !== null && !resultText) {
 				reject(new Error(strip(stderr) || output));
 				return;
 			}
-			res({ result: output, sessionId });
+			res({ result: output, lastSegment: finalSegment, sessionId });
 		});
 
 		child.on("error", (err) => {
@@ -2366,11 +2407,17 @@ async function handleInner(
 			const job = (await scheduler.list(true)).find((j) => j.id.startsWith(idPrefix));
 			if (!job) { await replyCard(messageId, `未找到 ID 为 \`${idPrefix}\` 的任务`, { title: "未找到", color: "orange" }); return; }
 			await replyCard(messageId, `正在手动执行: **${job.name}**...`, { title: "▶ 执行中", color: "wathet" });
+			manualRunJobs.add(job.id);
 			const result = await scheduler.run(job.id);
-			await replyCard(messageId, result.status === "ok" ? `执行成功: **${job.name}**` : `执行失败: ${result.error}`, {
-				title: result.status === "ok" ? "✅ 完成" : "❌ 失败",
-				color: result.status === "ok" ? "green" : "red",
-			});
+			if (result.status === "skipped") {
+				manualRunJobs.delete(job.id);
+				await replyCard(messageId, result.error || "任务正在执行中", { title: "⏭ 已跳过", color: "orange" });
+			} else if (result.status === "ok") {
+				const body = dedup(result.result || "") || `执行成功: **${job.name}**`;
+				await replyCard(messageId, body, { title: `✅ ${job.name}`, color: "green" });
+			} else {
+				await replyCard(messageId, `执行失败: ${result.error || "未知错误"}`, { title: "❌ 失败", color: "red" });
+			}
 			return;
 		}
 
@@ -2546,10 +2593,7 @@ async function handleInner(
 	console.log(`[Agent] 调用 Cursor CLI workspace=${workspace} model=${model} card=${cardId}`);
 	const taskStart = Date.now();
 
-	// 记忆由 Cursor 自主通过 memory-tool.ts 调用，server 不注入
-	if (memory) {
-		memory.appendSessionLog(workspace, "user", prompt, model);
-	}
+
 
 	// runAgent 获取 session lock 后回调 onStart，更新卡片为"处理中"
 	const onStart = cardId
@@ -2575,18 +2619,13 @@ async function handleInner(
 		: undefined;
 
 	try {
-		const cronCtx = getRecentCronContext();
+		const cronCtx = consumeCronContext();
 		const agentPrompt = cronCtx ? cronCtx + prompt : prompt;
 
 		const { result, quotaWarning } = await runAgent(workspace, agentPrompt, { onProgress, onStart });
 		const usedModel = quotaWarning ? "auto" : model;
 		const elapsed = formatElapsed(Math.round((Date.now() - taskStart) / 1000));
 		console.log(`[${new Date().toISOString()}] 完成 [${label}] model=${usedModel} elapsed=${elapsed} (${result.length} chars)`);
-
-		// 记录 assistant 回复到会话日志
-		if (memory) {
-			memory.appendSessionLog(workspace, "assistant", result.slice(0, 3000), usedModel);
-		}
 
 		// Agent 可能修改了 cron-jobs.json，重新加载调度器
 		scheduler.reload().catch(() => {});

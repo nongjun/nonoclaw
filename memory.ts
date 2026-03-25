@@ -95,7 +95,6 @@ export class MemoryManager {
 	private db: Database;
 	private config: MemoryConfig;
 	private memoryDir: string;
-	private sessionsDir: string;
 	private indexedAt = 0;
 	private indexing = false;
 	private hasFts5 = false;
@@ -103,9 +102,7 @@ export class MemoryManager {
 	constructor(config: MemoryConfig) {
 		this.config = config;
 		this.memoryDir = resolve(config.workspaceDir, ".cursor/memory");
-		this.sessionsDir = resolve(config.workspaceDir, ".cursor/sessions");
 		mkdirSync(this.memoryDir, { recursive: true });
-		mkdirSync(this.sessionsDir, { recursive: true });
 
 		const dbPath = resolve(config.workspaceDir, ".memory.sqlite");
 		this.db = new Database(dbPath);
@@ -628,20 +625,6 @@ export class MemoryManager {
 		}
 
 		return logPath;
-	}
-
-	// ── 会话日志 ──────────────────────────────────
-
-	appendSessionLog(workspace: string, role: "user" | "assistant", content: string, model?: string): void {
-		const logPath = resolve(this.sessionsDir, `${todayStr()}.jsonl`);
-		const entry = JSON.stringify({
-			ts: new Date().toISOString(),
-			workspace,
-			role,
-			content: content.slice(0, 8000),
-			...(model && { model }),
-		});
-		appendFileSync(logPath, entry + "\n");
 	}
 
 	// ── 统计 ──────────────────────────────────────
