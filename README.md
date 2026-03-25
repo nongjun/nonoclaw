@@ -406,7 +406,7 @@ bash service.sh install      # 安装开机自启动（推荐）
 | `.cursor/BOOT.md` | 启动自检清单（每次服务启动执行） |
 | `.cursor/memory/*.md` | 每日日记（自动生成） |
 | `.cursor/memory/heartbeat-state.json` | 心跳检查历史（自动维护） |
-| `.cursor/sessions/*.jsonl` | 会话转录（自动记录） |
+| `.cursor/projects/root/agent-transcripts/` | 会话转录（Cursor CLI 自动记录） |
 | `.memory.sqlite` | 向量嵌入数据库 |
 | `cron-jobs.json` | 定时任务（AI 可写入） |
 
@@ -417,7 +417,7 @@ bash service.sh install      # 安装开机自启动（推荐）
 3. **每次会话**：Cursor CLI 自动加载所有 `.mdc` 规则——身份、人格、安全、工具、约束从一开始就在上下文中
 4. **记忆召回**：回答关于过去工作/决策/偏好的问题前，AI 必须先搜索记忆（由 `memory-protocol.mdc` 强制执行）
 5. **记忆防丢失**：长对话中 AI 主动将关键信息写入文件，防止上下文窗口溢出导致数据丢失
-6. **每条消息**：直接传给 Cursor，不拼接任何东西；用户消息 + AI 回复自动记录到会话日志
+6. **每条消息**：直接传给 Cursor，不拼接任何东西；完整对话记录由 Cursor CLI 自动保存到 `agent-transcripts/`
 7. **全工作区索引**：工作区中所有文本文件都被索引（`.md` `.txt` `.html` `.json` `.mdc` 等）
 8. **增量索引**：仅对变化的文件重新嵌入（按内容 hash 追踪），相同文本永不重复调 API
 9. **定时任务**：AI 写入 `cron-jobs.json` 创建定时任务，到期自动执行并飞书通知
