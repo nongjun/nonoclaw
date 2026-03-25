@@ -1,0 +1,24 @@
+---
+description: nonoclaw 开发中积累的平台陷阱和非显而易见的经验
+globs:
+  - server.ts
+  - bridge.ts
+  - scheduler.ts
+alwaysApply: false
+---
+
+# 项目工程经验
+
+## Cursor CLI stream-json 事件语义
+
+**触发场景**：解析 `--output-format stream-json` 的 `assistant` 事件
+
+Cursor CLI 的 `assistant` 事件是**累积式**的 — 每次事件的 `message.content[].text` 携带该轮的完整文本（全文快照），不是自上次事件以来的增量 delta。
+
+解析时必须用替换赋值（`lastSegment = eventText`），不能用累加（`lastSegment += c.text`），否则文本会翻倍。`result` 事件的 `ev.result` 是 CLI 的权威最终输出，始终是单份干净文本。
+
+## proxychains 选择性代理
+
+**触发场景**：Cursor CLI 报 "Model not available / region" 错误
+
+只有 Cursor CLI 进程需要走代理（解决区域限制），nonoclaw 主进程（对接飞书等国内服务）不能走代理。使用 `proxychains4` 包裹 `spawn(AGENT_BIN, ...)` 调用，不设全局 `HTTP_PROXY` 环境变量。
