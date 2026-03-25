@@ -224,7 +224,7 @@ TEMPLATE_RULES=(
     .cursor/rules/cursor-capabilities.mdc
 )
 
-mkdir -p "$DEFAULT_WS/.cursor/memory" "$DEFAULT_WS/.cursor/sessions" "$DEFAULT_WS/.cursor/rules" "$DEFAULT_WS/.cursor/skills"
+mkdir -p "$DEFAULT_WS/.cursor/memory" "$DEFAULT_WS/.cursor/rules" "$DEFAULT_WS/.cursor/skills"
 
 COPIED=0
 

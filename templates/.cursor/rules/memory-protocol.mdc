@@ -42,7 +42,7 @@ alwaysApply: true
 
 - `.cursor/MEMORY.md` — 长期记忆（精华、偏好、重要决策）
 - `.cursor/memory/YYYY-MM-DD.md` — 每日日记（原始记录）
-- `.cursor/sessions/` — 会话转录日志（只读参考）
+- `.cursor/projects/root/agent-transcripts/` — 会话转录（Cursor CLI 自动记录）
 
 ## 记忆写入
 
