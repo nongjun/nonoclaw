@@ -1,23 +1,28 @@
 ---
-description: 核心体系保护名录——这些文件构成工作区的核心能力，任何情况下不得删除、清空或降级
+description: 核心体系保护名录——这些文件构成项目的核心竞争力，任何情况下不得删除、清空或降级
 alwaysApply: true
 ---
 
 ## 核心体系保护名录
 
-以下体系和文件是本工作区的核心基础设施。**任何情况下不得删除、清空、覆盖或降级。**
+以下体系和文件是本项目区别于普通 Cursor 配置的核心竞争力。**任何情况下不得删除、清空、覆盖或降级这些文件。** 合并外部更新时必须逐一确认这些文件未受影响。
 
 | 体系 | 受保护文件 | 职责 |
 |------|-----------|------|
-| 记忆闭环 | `memory-protocol.mdc`, `.cursor/MEMORY.md`, `.cursor/memory/` | AI 连续性：每日日记 + 长期记忆 |
-| 心跳闭环 | `heartbeat-protocol.mdc`, `.cursor/HEARTBEAT.md` | 自主巡检：定期检查 → 发现问题 → 通知用户 |
+| 记忆闭环 | `memory-protocol.mdc`, `.cursor/MEMORY.md`, `.cursor/memory/` | AI 连续性：每日日记 + 长期记忆 + 向量召回 |
+| 心跳闭环 | `heartbeat-protocol.mdc`, `.cursor/HEARTBEAT.md` | 自主巡检：定期检查 → 发现问题 → 飞书通知 |
+| 蒸馏闭环 | `distill-chats.ts`, server.ts 中蒸馏调度逻辑 | 自动从对话记录提炼记忆，每 12h 执行 |
 | 调度闭环 | `scheduler-protocol.mdc`, `cron-jobs.json` | 定时任务：自然语言创建 → 热加载 → 自动执行 |
 | 会话协议 | `soul.mdc`, `agent-identity.mdc`, `.cursor/BOOTSTRAP.md` | 出生仪式 + 每次会话启动读取流程 |
 | 身份系统 | `user-context.mdc`, `workspace-rules.mdc` | 用户画像 + 工作区安全边界 |
 | 工具能力 | `tools.mdc`, `cursor-capabilities.mdc` | Agent 能力清单 + 决策树 |
+| Bun 规范 | `use-bun-instead-of-node-vite-npm-pnpm.mdc` | 运行时强制约束 |
+| 工程哲学 | `engineering-philosophy.mdc` | 根因驱动、安全底线、编码标准 |
+| 工作区模板 | `templates/` 目录 | 新实例的出厂 DNA，只含核心闭环 |
 
 ## 保护规则
 
-1. 合并外部更新时，必须在合并后检查上述文件全部存在且内容完整
-2. 重构或清理时，这些文件不在清理范围内
-3. 如果被意外删除，从 Git 历史或备份恢复
+1. **合并外部更新时**，必须在合并后检查上述文件全部存在且内容完整
+2. **git pull/rebase 后**，立即验证核心体系名录中的文件未被覆盖
+3. **重构或清理时**，这些文件不在清理范围内
+4. **如果被意外删除**，从 Git 历史或 `templates/` 目录恢复
