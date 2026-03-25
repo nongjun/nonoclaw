@@ -1,7 +1,9 @@
 ---
-description: 定时任务协议 — 你有能力创建和管理定时任务
+description: 定时任务协议 — 创建和管理定时任务。涉及 cron、scheduler、定时任务时加载。
 globs:
-alwaysApply: true
+  - "**/cron-jobs*"
+  - "**/scheduler*"
+alwaysApply: false
 ---
 
 # 定时任务协议

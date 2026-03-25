@@ -62,9 +62,6 @@ package-lock.json
 .cursor/sessions/
 .cursor/projects/
 
-# Cursor IDE managed (auto-generated, varies per installation)
-.cursor/skills-cursor/
-
 # instance-layer files (personalized at runtime, templates in templates/.cursor/)
 .cursor/MEMORY.md
 .cursor/IDENTITY.md

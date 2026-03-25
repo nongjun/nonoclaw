@@ -1,0 +1,34 @@
+---
+description: Bun 运行时规范 — 统一用 Bun 替代 Node/npm/vite
+globs:
+  - "**/*.ts"
+  - "**/*.js"
+  - "**/package.json"
+alwaysApply: false
+---
+
+# Bun 规范
+
+本项目统一使用 Bun，禁止 Node.js / npm / pnpm / vite。
+
+## 命令替换
+
+| 禁止 | 使用 |
+|------|------|
+| `node file` / `ts-node file` | `bun file` |
+| `npm install` / `yarn` / `pnpm` | `bun install` |
+| `npm run X` | `bun run X` |
+| `npx X` | `bunx X` |
+| `jest` / `vitest` | `bun test` |
+
+## API 偏好
+
+| 禁止 | 使用 |
+|------|------|
+| express | `Bun.serve()`（内置 WebSocket、HTTPS、路由）|
+| better-sqlite3 | `bun:sqlite` |
+| ioredis | `Bun.redis` |
+| ws | 内置 `WebSocket` |
+| dotenv | Bun 自动加载 .env |
+| node:fs readFile/writeFile | `Bun.file` |
+| execa | `Bun.$\`command\`` |
