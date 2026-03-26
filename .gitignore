@@ -72,3 +72,6 @@ package-lock.json
 .cursor/HEARTBEAT.md
 .cursor/TASKS.md
 .cursor/TOOLS.md
+
+# instance runtime data (each deployment has its own)
+cron-jobs.json

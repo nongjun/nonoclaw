@@ -261,11 +261,11 @@ Edit the `.cursor/rules/*.mdc` files in your workspace to personalize:
 
 `git pull` is safe for deployed instances:
 
-- **Code & rules** update normally — improvements from the repo benefit all instances
-- **Templates** (`templates/`) update, but `ensureWorkspace()` never overwrites existing files
-- **Instance data** (`.cursor/MEMORY.md`, `IDENTITY.md`, `SOUL.md`, `USER.md`, etc.) is `.gitignore`d — your AI's memories and personality are never touched by upstream changes
+- **Source code** updates normally — all instances share the same running code
+- **Product templates** (`templates/`) update, but `ensureWorkspace()` never overwrites existing files
+- **Instance data** (`.cursor/MEMORY.md`, `cron-jobs.json`, `.env`, etc.) is `.gitignore`d — untouched by upstream changes
 
-The project uses a three-layer separation: **code** (shared logic, tracked), **rules** (shared AI behavior DNA, tracked), and **instance data** (personal memories/identity, gitignored). See `AGENTS.md` for details.
+The repo uses a four-layer architecture: **product** (`templates/` — what users get), **source** (running code), **harness** (`.cursor/`, `文档/`, `AGENTS.md` — dev tooling), and **instance data** (gitignored runtime data). See `AGENTS.md` for details.
 
 ## Roadmap
 
@@ -437,11 +437,11 @@ bash service.sh install      # 安装开机自启动（推荐）
 
 部署的实例可以放心执行 `git pull`：
 
-- **代码和规则**正常更新 — 开源仓库的改进惠及所有实例
-- **模板文件**（`templates/`）更新，但 `ensureWorkspace()` 不会覆盖已有文件
-- **实例数据**（`.cursor/MEMORY.md`、`IDENTITY.md`、`SOUL.md`、`USER.md` 等）已被 `.gitignore` 排除 — 你的 AI 记忆和人格不受上游更新影响
+- **源码**正常更新 — 所有实例共享运行代码
+- **产品模板**（`templates/`）更新，但 `ensureWorkspace()` 不会覆盖已有文件
+- **实例数据**（`.cursor/MEMORY.md`、`cron-jobs.json`、`.env` 等）已被 `.gitignore` 排除 — 不受上游更新影响
 
-项目采用三层隔离：**代码层**（共享逻辑，追踪）、**规则层**（共享 AI 行为 DNA，追踪）、**实例层**（私有记忆/身份，gitignored）。详见 `AGENTS.md`。
+项目采用四层架构：**产品**（`templates/` — nonoclaw 本体）、**源码**（运行代码）、**马鞍工程**（`.cursor/`、`文档/`、`AGENTS.md` — 开发工具链）、**实例数据**（gitignored）。详见 `AGENTS.md`。
 
 ## 定时任务与心跳
 
