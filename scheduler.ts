@@ -12,7 +12,7 @@
  * - 连续错误计数（仅日志，不自动禁用）
  */
 
-import { readFileSync, writeFileSync, renameSync, existsSync, watchFile, unwatchFile } from "node:fs";
+import { renameSync, existsSync, watchFile, unwatchFile } from "node:fs";
 import { randomUUID } from "node:crypto";
 
 // ── 类型定义 ──────────────────────────────────────
@@ -390,7 +390,22 @@ export class Scheduler {
 			}
 		}
 		try {
-			const raw = readFileSync(this.opts.storePath, "utf-8");
+			let raw: string | null = null;
+			let lastErr: unknown;
+			for (let attempt = 0; attempt < 3; attempt++) {
+				try {
+					raw = await Bun.file(this.opts.storePath).text();
+					break;
+				} catch (e) {
+					lastErr = e;
+					await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+				}
+			}
+			if (raw === null) {
+				this.log(`无法读取 cron-jobs.json（重试耗尽）: ${lastErr instanceof Error ? lastErr.message : lastErr}`);
+				return;
+			}
+			if (!raw.trim()) { this.jobs.clear(); return; }
 			const store = JSON.parse(raw) as CronStoreFile;
 			if (store.version !== 1) {
 				this.log(`未知版本 ${store.version}，跳过加载`);
@@ -422,7 +437,7 @@ export class Scheduler {
 			const tmpPath = this.opts.storePath + ".tmp";
 			const bakPath = this.opts.storePath + ".bak";
 
-			writeFileSync(tmpPath, json);
+			await Bun.write(tmpPath, json);
 			if (existsSync(this.opts.storePath)) {
 				try { renameSync(this.opts.storePath, bakPath); } catch {}
 			}

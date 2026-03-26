@@ -21,4 +21,10 @@ Cursor CLI 的 `assistant` 事件是**累积式**的 — 每次事件的 `messag
 
 **触发场景**：Cursor CLI 报 "Model not available / region" 错误
 
-只有 Cursor CLI 进程需要走代理（解决区域限制），nonoclaw 主进程（对接飞书等国内服务）不能走代理。使用 `proxychains4` 包裹 `spawn(AGENT_BIN, ...)` 调用，不设全局 `HTTP_PROXY` 环境变量。
+只有 Cursor CLI 进程需要走代理（解决区域限制），nonoclaw 主进程（对接飞书等国内服务）不能走代理。启动时通过 `USE_PROXYCHAINS = existsSync(PROXYCHAINS_BIN) && existsSync(PROXYCHAINS_CONF)` 自动检测：有 proxychains 则包裹 `spawn`，没有（如 macOS）则直连 Agent CLI。不设全局 `HTTP_PROXY` 环境变量。
+
+## 模型降级策略
+
+**触发场景**：Cursor 免费计划、欠费、配额耗尽
+
+`execAgentWithFallback()` 统一处理：先用 `config.CURSOR_MODEL` 调 Agent CLI，若报 billing/plan 类错误（由 `BILLING_PATTERNS` 匹配），自动降级到 `"auto"` 重试。cron、heartbeat、distill、BOOT.md 自检均走此函数。`runAgent()`（用户消息处理）有独立的降级逻辑和 quota 提示。
