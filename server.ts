@@ -33,6 +33,7 @@ const AGENT_BIN = process.env.AGENT_BIN || resolve(HOME, ".local/bin/agent");
 const PROXYCHAINS_BIN = "/usr/bin/proxychains4";
 const PROXYCHAINS_CONF = "/opt/clash/proxychains.conf";
 const USE_PROXYCHAINS = existsSync(PROXYCHAINS_BIN) && existsSync(PROXYCHAINS_CONF);
+if (!USE_PROXYCHAINS) console.log("[配置] proxychains 未检测到，Agent 将直连");
 
 function agentSpawnArgs(agentArgs: string[]): [string, string[]] {
 	if (USE_PROXYCHAINS) {
@@ -40,7 +41,6 @@ function agentSpawnArgs(agentArgs: string[]): [string, string[]] {
 	}
 	return [AGENT_BIN, agentArgs];
 }
-
 const INBOX_DIR = resolve(ROOT, "inbox");
 
 mkdirSync(INBOX_DIR, { recursive: true });
@@ -279,7 +279,7 @@ const scheduler = new Scheduler({
 		const cronLockKey = `cron:${job.id}`;
 		busySessions.add(cronLockKey);
 		try {
-			const r = await execAgent(cronLockKey, ws, config.CURSOR_MODEL, job.message);
+			const r = await execAgentWithFallback(cronLockKey, ws, job.message);
 			return { status: "ok" as const, result: r.lastSegment || r.result, sessionId: r.sessionId };
 		} catch (err) {
 			return { status: "error" as const, error: err instanceof Error ? err.message : String(err) };
@@ -320,7 +320,7 @@ const heartbeat = new HeartbeatRunner({
 		const lockKey = "heartbeat:check";
 		busySessions.add(lockKey);
 		try {
-			const { result } = await execAgent(lockKey, defaultWorkspace, config.CURSOR_MODEL, prompt);
+			const { result } = await execAgentWithFallback(lockKey, defaultWorkspace, prompt);
 			return result;
 		} finally {
 			busySessions.delete(lockKey);
@@ -407,7 +407,7 @@ async function runDistillCycle(): Promise<void> {
 		busySessions.add(DISTILL_LOCK_KEY);
 		let result: string;
 		try {
-			const agentPromise = execAgent(DISTILL_LOCK_KEY, defaultWorkspace, config.CURSOR_MODEL, distillPrompt);
+			const agentPromise = execAgentWithFallback(DISTILL_LOCK_KEY, defaultWorkspace, distillPrompt);
 			let timer: ReturnType<typeof setTimeout>;
 			const timeoutPromise = new Promise<never>((_, reject) => {
 				timer = setTimeout(() => reject(new Error("蒸馏超时")), DISTILL_TIMEOUT);
@@ -706,7 +706,7 @@ async function readResponseBuffer(response: unknown, depth = 0): Promise<Buffer>
 	if (typeof resp.writeFile === "function") {
 		const tmp = resolve(INBOX_DIR, `.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
 		await (resp as { writeFile: (p: string) => Promise<void> }).writeFile(tmp);
-		const buf = readFileSync(tmp);
+		const buf = Buffer.from(await Bun.file(tmp).arrayBuffer());
 		try { unlinkSync(tmp); } catch {}
 		return buf;
 	}
@@ -1039,6 +1039,9 @@ const BILLING_PATTERNS = [
 	/usage.*limit.*exceeded/i,
 	/subscription.*expired/i,
 	/plan.*expired/i,
+	/Named models unavailable/i,
+	/Free plans? can only use/i,
+	/model.*not available.*(?:plan|tier|billing|subscription)/i,
 	/resource_exhausted/i,
 	/402/,
 ];
@@ -1512,6 +1515,59 @@ function describeToolResult(tc: Record<string, { args?: Record<string, unknown>;
 function basename(p: string): string {
 	const parts = p.split("/");
 	return parts[parts.length - 1] || p;
+}
+
+async function execAgentWithFallback(
+	lockKey: string, workspace: string, prompt: string,
+	opts?: { sessionId?: string; onProgress?: (p: AgentProgress) => void },
+): Promise<{ result: string; lastSegment: string; sessionId?: string }> {
+	try {
+		return await execAgent(lockKey, workspace, config.CURSOR_MODEL, prompt, opts);
+	} catch (e) {
+		const msg = e instanceof Error ? e.message : String(e);
+		if (isBillingError(msg)) {
+			console.warn(`[降级] ${config.CURSOR_MODEL} → auto`);
+			return await execAgent(lockKey, workspace, "auto", prompt, opts);
+		}
+		throw e;
+	}
+}
+
+async function runBootCheck(): Promise<void> {
+	const bootPath = resolve(defaultWorkspace, ".cursor/BOOT.md");
+	try {
+		if (!existsSync(bootPath)) return;
+		let content = "";
+		for (let attempt = 0; attempt < 3; attempt++) {
+			try {
+				content = await Bun.file(bootPath).text();
+				break;
+			} catch (e) {
+				if (attempt === 2) console.warn(`[启动] BOOT.md 读取失败（已重试3次）: ${e}`);
+				else await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+			}
+		}
+		content = content.trim();
+		if (!content) return;
+		console.log("[启动] 检测到 .cursor/BOOT.md，执行启动自检...");
+		const bootPrompt = [
+			"你正在执行启动自检。严格按 .cursor/BOOT.md 指示操作。",
+			"如果无事可做，不需要回复任何内容。",
+		].join("\n");
+		busySessions.add("boot:check");
+		try {
+			const { result } = await execAgentWithFallback("boot:check", defaultWorkspace, bootPrompt);
+			const trimmed = result.trim();
+			if (trimmed && !/^(无输出|HEARTBEAT_OK)$/i.test(trimmed) && lastActiveChatId) {
+				await sendCard(lastActiveChatId, trimmed, { title: "🚀 启动自检", color: "wathet" });
+			}
+			console.log("[启动] .cursor/BOOT.md 自检完成");
+		} finally {
+			busySessions.delete("boot:check");
+		}
+	} catch (e) {
+		console.warn(`[启动] .cursor/BOOT.md 执行失败: ${e}`);
+	}
 }
 
 // 核心：spawn agent CLI，解析 stream-json，返回结果
@@ -2768,32 +2824,7 @@ ${list}
 	console.log("飞书长连接已启动，等待消息...");
 
 	// ── 启动自检（.cursor/BOOT.md）───────────────────────
-	setTimeout(async () => {
-		const bootPath = resolve(defaultWorkspace, ".cursor/BOOT.md");
-		try {
-			if (!existsSync(bootPath)) return;
-			const content = readFileSync(bootPath, "utf-8").trim();
-			if (!content) return;
-			console.log("[启动] 检测到 .cursor/BOOT.md，执行启动自检...");
-			const bootPrompt = [
-				"你正在执行启动自检。严格按 .cursor/BOOT.md 指示操作。",
-				"如果无事可做，不需要回复任何内容。",
-			].join("\n");
-			busySessions.add("boot:check");
-			try {
-				const { result } = await execAgent("boot:check", defaultWorkspace, config.CURSOR_MODEL, bootPrompt);
-				const trimmed = result.trim();
-				if (trimmed && !/^(无输出|HEARTBEAT_OK)$/i.test(trimmed) && lastActiveChatId) {
-					await sendCard(lastActiveChatId, trimmed, { title: "🚀 启动自检", color: "wathet" });
-				}
-				console.log("[启动] .cursor/BOOT.md 自检完成");
-			} finally {
-				busySessions.delete("boot:check");
-			}
-		} catch (e) {
-			console.warn(`[启动] .cursor/BOOT.md 执行失败: ${e}`);
-		}
-	}, 8000);
+	setTimeout(runBootCheck, 8000);
 }
 
 if (IS_WORKER) {
@@ -2850,30 +2881,5 @@ ${list}
 	console.log(`[Worker] HTTP 服务已启动 port=${WORKER_PORT}`);
 
 	// Worker 模式也执行启动自检
-	setTimeout(async () => {
-		const bootPath = resolve(defaultWorkspace, ".cursor/BOOT.md");
-		try {
-			if (!existsSync(bootPath)) return;
-			const content = readFileSync(bootPath, "utf-8").trim();
-			if (!content) return;
-			console.log("[启动] 检测到 .cursor/BOOT.md，执行启动自检...");
-			const bootPrompt = [
-				"你正在执行启动自检。严格按 .cursor/BOOT.md 指示操作。",
-				"如果无事可做，不需要回复任何内容。",
-			].join("\n");
-			busySessions.add("boot:check");
-			try {
-				const { result } = await execAgent("boot:check", defaultWorkspace, config.CURSOR_MODEL, bootPrompt);
-				const trimmed = result.trim();
-				if (trimmed && !/^(无输出|HEARTBEAT_OK)$/i.test(trimmed) && lastActiveChatId) {
-					await sendCard(lastActiveChatId, trimmed, { title: "🚀 启动自检", color: "wathet" });
-				}
-				console.log("[启动] .cursor/BOOT.md 自检完成");
-			} finally {
-				busySessions.delete("boot:check");
-			}
-		} catch (e) {
-			console.warn(`[启动] .cursor/BOOT.md 执行失败: ${e}`);
-		}
-	}, 5000);
+	setTimeout(runBootCheck, 5000);
 }
