@@ -75,3 +75,4 @@ package-lock.json
 
 # instance runtime data (each deployment has its own)
 cron-jobs.json
+projects.json
