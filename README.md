@@ -200,6 +200,7 @@ Like OpenClaw, all identity/personality/rules are injected at session start. In 
 ```
 templates/                        Shipped with the repo (factory defaults)
 ├── AGENTS.md                     Workspace instructions (Cursor auto-loads)
+├── README.md                     Workspace readme
 └── .cursor/
     ├── SOUL.md                   AI personality and principles
     ├── IDENTITY.md               Name, emoji, temperament
@@ -213,7 +214,7 @@ templates/                        Shipped with the repo (factory defaults)
     └── rules/                    Cursor rules (auto-loaded every session)
         ├── soul.mdc              Personality, principles, style
         ├── agent-identity.mdc    Identity metadata + Feishu output limits
-        └── ...                   (8 more rule files)
+        └── ...                   (11 more rule files, 13 total)
 
 ~/your-workspace/                 User's actual workspace (auto-initialized)
 ├── AGENTS.md                     Workspace instructions (Cursor auto-loads from root)
