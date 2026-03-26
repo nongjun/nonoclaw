@@ -21,8 +21,6 @@ import { Database } from "bun:sqlite";
 import { resolve } from "node:path";
 import {
 	existsSync,
-	readFileSync,
-	writeFileSync,
 	mkdirSync,
 	readdirSync,
 	statSync,
@@ -109,11 +107,11 @@ interface DistillState {
 	totalDistills: number;
 }
 
-function loadState(memoryDir: string): DistillState {
+async function loadState(memoryDir: string): Promise<DistillState> {
 	const statePath = resolve(memoryDir, STATE_FILENAME);
 	if (existsSync(statePath)) {
 		try {
-			return JSON.parse(readFileSync(statePath, "utf-8"));
+			return JSON.parse(await Bun.file(statePath).text());
 		} catch { /* 文件损坏，返回默认值 */ }
 	}
 	return {
@@ -124,8 +122,8 @@ function loadState(memoryDir: string): DistillState {
 	};
 }
 
-function saveState(memoryDir: string, state: DistillState): void {
-	writeFileSync(resolve(memoryDir, STATE_FILENAME), JSON.stringify(state, null, 2));
+async function saveState(memoryDir: string, state: DistillState): Promise<void> {
+	await Bun.write(resolve(memoryDir, STATE_FILENAME), JSON.stringify(state, null, 2));
 }
 
 // ── 对话提取 ──────────────────────────────────────
@@ -159,8 +157,6 @@ function extractMeta(db: Database): ConversationMeta | null {
 	}
 }
 
-// Cursor 注入的系统标签（提取时需要清除的噪音）
-const SYSTEM_TAG_PATTERN = /<(?:user_info|git_status|agent_transcripts|rules|open_and_recently_viewed_files|system_reminder|attached_files|task_notification|agent_skills|cursor_commands)>[\s\S]*?<\/\1>/g;
 
 function cleanUserContent(raw: string): string {
 	const uqMatch = raw.match(/<user_query>\s*([\s\S]*?)\s*<\/user_query>/);
@@ -347,7 +343,7 @@ async function main() {
 	console.log(`[蒸馏] Cursor workspace hash: ${wsHashes.join(", ")}`);
 
 	// 2. 加载状态
-	const state = loadState(memoryDir);
+	const state = await loadState(memoryDir);
 	const processedSet = new Set(state.processedSessions);
 	const cutoffTs = Date.now() - sinceHours * 60 * 60 * 1000;
 	const effectiveCutoff = Math.max(cutoffTs, state.lastDistillTs);
@@ -399,7 +395,7 @@ async function main() {
 	// 5. 格式化并写入提取文件
 	const extractContent = formatExtract(newConversations, workspacePath);
 	const extractPath = resolve(memoryDir, EXTRACT_FILENAME);
-	writeFileSync(extractPath, extractContent);
+	await Bun.write(extractPath, extractContent);
 	console.log(`[蒸馏] 已写入提取文件: ${extractPath} (${Math.round(extractContent.length / 1024)}KB)`);
 
 	// 6. 更新状态
@@ -410,7 +406,7 @@ async function main() {
 		processedSet.add(conv.sessionId);
 	}
 	state.processedSessions = [...processedSet].slice(-200);
-	saveState(memoryDir, state);
+	await saveState(memoryDir, state);
 
 	// 7. 输出摘要
 	console.log(`[蒸馏] 完成 ✓ — ${newConversations.length} 个对话, ${totalTurns} 轮, 第 ${state.totalDistills} 次蒸馏`);

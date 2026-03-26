@@ -203,7 +203,7 @@ async function readResponseBuffer(response: unknown, depth = 0): Promise<Buffer>
 	if (typeof resp.writeFile === "function") {
 		const tmp = resolve(INBOX_DIR, `.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
 		await (resp as { writeFile: (p: string) => Promise<void> }).writeFile(tmp);
-		const buf = readFileSync(tmp);
+		const buf = Buffer.from(await Bun.file(tmp).arrayBuffer());
 		try { unlinkSync(tmp); } catch {}
 		return buf;
 	}
