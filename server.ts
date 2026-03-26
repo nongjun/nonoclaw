@@ -32,6 +32,15 @@ const PROJECTS_PATH = resolve(ROOT, "projects.json");
 const AGENT_BIN = process.env.AGENT_BIN || resolve(HOME, ".local/bin/agent");
 const PROXYCHAINS_BIN = "/usr/bin/proxychains4";
 const PROXYCHAINS_CONF = "/opt/clash/proxychains.conf";
+const USE_PROXYCHAINS = existsSync(PROXYCHAINS_BIN) && existsSync(PROXYCHAINS_CONF);
+
+function agentSpawnArgs(agentArgs: string[]): [string, string[]] {
+	if (USE_PROXYCHAINS) {
+		return [PROXYCHAINS_BIN, ["-f", PROXYCHAINS_CONF, "-q", AGENT_BIN, ...agentArgs]];
+	}
+	return [AGENT_BIN, agentArgs];
+}
+
 const INBOX_DIR = resolve(ROOT, "inbox");
 
 mkdirSync(INBOX_DIR, { recursive: true });
@@ -908,7 +917,8 @@ function parseAgentModelsOutput(raw: string): AgentModelEntry[] {
 
 function fetchAgentModelsFromCli(apiKey: string): Promise<AgentModelEntry[]> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(PROXYCHAINS_BIN, ["-f", PROXYCHAINS_CONF, "-q", AGENT_BIN, "models"], {
+		const [cmd, cmdArgs] = agentSpawnArgs(["models"]);
+		const child = spawn(cmd, cmdArgs, {
 			env: { ...process.env, CURSOR_API_KEY: apiKey },
 			stdio: ["ignore", "pipe", "pipe"],
 		});
@@ -1358,13 +1368,13 @@ async function generateSessionTitle(workspace: string, sessionId: string, prompt
 	try {
 		const context = `用户: ${prompt.slice(0, 200)}\n\nAI回复摘要: ${result.slice(0, 500)}`;
 		const titlePrompt = `根据以下对话，生成一个简短的中文标题。要求：必须使用中文，4-20个字，不加标点，不加引号，不加书名号，直接输出标题，不要输出任何其它内容。\n\n${context}`;
-		const child = spawn(PROXYCHAINS_BIN, [
-			"-f", PROXYCHAINS_CONF, "-q", AGENT_BIN,
+		const [cmd, cmdArgs] = agentSpawnArgs([
 			"-p", "--force", "--trust",
 			"--model", "auto",
 			"--output-format", "text",
 			"--", titlePrompt,
-		], {
+		]);
+		const child = spawn(cmd, cmdArgs, {
 			env: { ...process.env, CURSOR_API_KEY: config.CURSOR_API_KEY },
 			stdio: ["ignore", "pipe", "pipe"],
 		});
@@ -1529,7 +1539,8 @@ function execAgent(
 		}
 		args.push("--", prompt);
 
-		const child = spawn(PROXYCHAINS_BIN, ["-f", PROXYCHAINS_CONF, "-q", AGENT_BIN, ...args], {
+		const [cmd, cmdArgs] = agentSpawnArgs(args);
+		const child = spawn(cmd, cmdArgs, {
 			env: { ...process.env, CURSOR_API_KEY: config.CURSOR_API_KEY },
 			stdio: ["ignore", "pipe", "pipe"],
 		});
