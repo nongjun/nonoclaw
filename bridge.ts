@@ -11,7 +11,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { readFileSync, watchFile } from "node:fs";
+import { readFileSync, watchFile, existsSync } from "node:fs";
 import { resolve } from "node:path";
 
 const HOME = process.env.HOME;
@@ -21,6 +21,7 @@ const ENV_PATH = resolve(import.meta.dirname, ".env");
 const AGENT_BIN = process.env.AGENT_BIN || resolve(HOME, ".local/bin/agent");
 const PROXYCHAINS_BIN = "/usr/bin/proxychains4";
 const PROXYCHAINS_CONF = "/opt/clash/proxychains.conf";
+const USE_PROXYCHAINS = existsSync(PROXYCHAINS_BIN) && existsSync(PROXYCHAINS_CONF);
 
 // ── .env 热更换 ──────────────────────────────────
 interface EnvConfig {
@@ -116,14 +117,17 @@ function runAgent(prompt: string): Promise<string> {
 	const workspace = resolve(import.meta.dirname);
 
 	return new Promise((res, reject) => {
-		const child = spawn(PROXYCHAINS_BIN, [
-			"-f", PROXYCHAINS_CONF, "-q", AGENT_BIN,
+		const agentArgs = [
 			"-p", "--force", "--trust", "--approve-mcps",
 			"--workspace", workspace,
 			"--model", config.CURSOR_MODEL,
 			"--output-format", "text",
 			"--", prompt,
-		], {
+		];
+		const [cmd, cmdArgs] = USE_PROXYCHAINS
+			? [PROXYCHAINS_BIN, ["-f", PROXYCHAINS_CONF, "-q", AGENT_BIN, ...agentArgs]]
+			: [AGENT_BIN, agentArgs];
+		const child = spawn(cmd, cmdArgs, {
 			env: { ...process.env, CURSOR_API_KEY: config.CURSOR_API_KEY },
 			stdio: ["ignore", "pipe", "pipe"],
 		});
