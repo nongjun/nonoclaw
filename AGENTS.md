@@ -23,7 +23,7 @@
 
 **`templates/` = nonoclaw 本体。** 用户 clone 仓库后，`server.ts` 的 `ensureWorkspace()` 把模板复制到工作区——这就是 nonoclaw 交付给用户的全部内容：规则、人格、记忆骨架、技能。
 
-**`.cursor/`, `文档/`, `架构.md`, `AGENTS.md` = 马鞍工程。** 这些是开发 nonoclaw 用的工具链——给 AI 开发者（Cursor Agent）提供项目理解和行为指导。它们不是 nonoclaw 产品的一部分，但在此开发工作区中同时也作为运行时 AI 配置生效。
+**`.cursor/`, `文档/`, `架构.md`, `AGENTS.md`, `README.md` = 马鞍工程。** 这些是开发 nonoclaw 用的工具链——给 AI 开发者（Cursor Agent）提供项目理解和行为指导。它们不是 nonoclaw 产品的一部分，但在此开发工作区中同时也作为运行时 AI 配置生效。
 
 **源码 = 共享的运行代码。** `*.ts`、`feishu/`、`plugins/` 等是 nonoclaw 的代码逻辑，所有实例通过 `git pull` 共享更新。
 
@@ -31,8 +31,8 @@
 
 改进规则和模板时，必须同时写入两处：
 
-1. **马鞍文件**（如 `.cursor/rules/soul.mdc`）— 当前开发/运行实例立即生效
-2. **产品模板**（如 `templates/.cursor/rules/soul.mdc`）— 新部署的实例获得改进
+1. **马鞍文件**（如 `.cursor/rules/memory-protocol.mdc`）— 当前开发/运行实例立即生效
+2. **产品模板**（如 `templates/.cursor/rules/memory-protocol.mdc`）— 新部署的实例获得改进
 
 只改马鞍不改产品 → 新实例享受不到改进。只改产品不改马鞍 → 当前实例不生效。**双写才是闭环。**
 
@@ -42,7 +42,7 @@
 
 以下文件是运行时产生的实例数据，通过 `.gitignore` 排除：
 
-- `.cursor/MEMORY.md`, `IDENTITY.md`, `SOUL.md`, `USER.md` 等 — AI 个性化数据
+- `.cursor/MEMORY.md`, `.cursor/IDENTITY.md`, `.cursor/SOUL.md`, `.cursor/USER.md` 等 — AI 个性化数据
 - `cron-jobs.json` — 每个实例自己的定时任务
 - `.sessions.json`, `.memory.sqlite` — 会话记录和向量数据库
 - `.cursor/memory/`, `.cursor/sessions/` — 日记和转录
@@ -116,7 +116,7 @@ nonoclaw/
 ├── 文档/                  # 项目知识库
 │
 │ ── 实例数据（gitignored）────────────────────────
-│   .cursor/MEMORY.md, IDENTITY.md, SOUL.md, USER.md ...
+│   .cursor/MEMORY.md, .cursor/IDENTITY.md, .cursor/SOUL.md ...
 │   cron-jobs.json, .env, .sessions.json, .memory.sqlite
 │   .cursor/memory/, .cursor/sessions/, inbox/
 │
@@ -146,7 +146,7 @@ Gateway-Worker 双进程架构。`start.ts` 为服务入口，import `gateway.ts
 1. **先策略后执行** — 复杂操作先输出方案，确认后再动手
 2. **每次修改后自动审查** — 改完代码立即检查是否引入新问题
 3. **对外交付标准** — 不是"能跑"，而是"用户不会踩坑"
-4. **文档极简主义** — 详见 `文档策略.mdc`。Git 是唯一变更记录器，文档只记录代码无法表达的信息
+4. **文档极简主义** — Git 是唯一变更记录器，文档只记录代码无法表达的信息
 
 ## 六大闭环体系
 
