@@ -53,10 +53,12 @@ for (const f of readdirSync(INBOX_DIR)) {
 }
 
 process.on("uncaughtException", (err) => {
-	console.error(`[致命] ${err.message}\n${err.stack}`);
+	console.error(`[致命] uncaughtException: ${err.message}\n${err.stack}`);
+	setTimeout(() => process.exit(1), 500);
 });
 process.on("unhandledRejection", (reason) => {
 	console.error("[致命] unhandledRejection:", reason);
+	setTimeout(() => process.exit(1), 500);
 });
 
 // ── .env 热更换 ──────────────────────────────────
