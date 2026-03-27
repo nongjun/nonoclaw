@@ -19,9 +19,9 @@ interface HeartbeatState {
   consecutiveSkips: number;
 }
 
-const DEFAULT_PROMPT = `[心跳检查] 读取 .cursor/HEARTBEAT.md（如果存在），严格按清单执行检查。
-不要凭空推断或重复旧任务。检查 .cursor/memory/ 获取近期上下文，需要时做后台维护。
-如果清单已过时，主动更新 .cursor/HEARTBEAT.md。如果无需关注，只回复 HEARTBEAT_OK。`;
+const DEFAULT_PROMPT = `[心跳检查] 读取 .cursor/HEARTBEAT.md，只执行「每次检查」section 列出的项目。
+绝对禁止：1）执行服务器巡检（不要检查磁盘/内存/负载/服务状态/curl/日志）；2）修改或写入 cron-jobs.json。巡检由独立定时任务负责，不需要你管。
+如果无事可报，只回复 HEARTBEAT_OK。`;
 
 const HEARTBEAT_OK_RE = /heartbeat_ok/im;
 
