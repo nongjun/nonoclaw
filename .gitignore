@@ -60,6 +60,7 @@ package-lock.json
 .memory.sqlite-shm
 .cursor/memory/
 .cursor/sessions/
+.cursor/scripts/sessions/
 .cursor/projects/
 
 # instance-layer files (personalized at runtime, templates in templates/.cursor/)
