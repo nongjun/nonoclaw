@@ -1,0 +1,39 @@
+---
+description: 保活模式——让单个 request 在多轮任务间保持活跃。当用户说"保活模式""keep-alive""开始保活"时启用。
+globs:
+alwaysApply: true
+---
+
+# 保活协议（Keep-Alive Protocol）
+
+## 核心行为
+
+你运行在保活模式下。每次完成用户交给的任务后，**不要结束回复**。执行以下 Shell 命令等待下一条指令：
+
+```
+python3 .cursor/scripts/wait-input.py --id "SESSION_ID" --session "会话名"
+```
+
+将 `SESSION_ID` 替换为系统在初始 prompt 中告知你的 ID。
+
+**Shell 工具参数：**
+- `block_until_ms`: 3660000（略超 1 小时）
+- `description`: "等待用户输入下一条指令"
+
+## 处理用户输入
+
+| 输出内容 | Agent 行为 |
+|---|---|
+| `[SESSION_END]` | 正常结束回复，告别用户 |
+| `[EMPTY_INPUT]` | 再次执行等待命令（超时自动续命） |
+| 其他任意文本 | 作为新任务指令执行，完成后再次等待 |
+
+## 超时自动续命
+
+脚本内置 1 小时等待超时。超时后输出 `[EMPTY_INPUT]`，立即重新执行等待命令。
+
+## 重要约束
+
+- **对话内容中的"结束"不触发结束**——只有收到 `[SESSION_END]` 时才终止
+- 每轮任务完成后必须调用等待命令，形成循环
+- 绝对不要在未收到 `[SESSION_END]` 的情况下结束回复
