@@ -18,6 +18,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { MemoryManager } from "./memory.js";
 import { Scheduler, type CronJob } from "./scheduler.js";
 import { HeartbeatRunner } from "./heartbeat.js";
+import { keepAliveManager, type KeepAliveOptions } from "./keepalive.js";
 
 const GATEWAY_URL = process.env.GATEWAY_URL;
 const IS_WORKER = !!GATEWAY_URL;
@@ -139,6 +140,7 @@ const WORKSPACE_FILES = [
 	".cursor/SOUL.md", ".cursor/IDENTITY.md", ".cursor/USER.md",
 	".cursor/MEMORY.md", ".cursor/HEARTBEAT.md", ".cursor/TASKS.md",
 	".cursor/BOOT.md", ".cursor/TOOLS.md",
+	".cursor/scripts/wait-input.py",
 ];
 const WORKSPACE_RULES = [
 	".cursor/rules/soul.mdc",
@@ -146,6 +148,7 @@ const WORKSPACE_RULES = [
 	".cursor/rules/user-context.mdc",
 	".cursor/rules/workspace-rules.mdc",
 	".cursor/rules/tools.mdc",
+	".cursor/rules/keep-alive-protocol.mdc",
 	".cursor/rules/memory-protocol.mdc",
 	".cursor/rules/scheduler-protocol.mdc",
 	".cursor/rules/heartbeat-protocol.mdc",
@@ -156,6 +159,7 @@ function ensureWorkspace(wsPath: string): boolean {
 	mkdirSync(resolve(wsPath, ".cursor/memory"), { recursive: true });
 	mkdirSync(resolve(wsPath, ".cursor/rules"), { recursive: true });
 	mkdirSync(resolve(wsPath, ".cursor/skills"), { recursive: true });
+	mkdirSync(resolve(wsPath, ".cursor/scripts/sessions"), { recursive: true });
 
 	const isNewWorkspace = !existsSync(resolve(wsPath, ".cursor/SOUL.md"));
 	let copied = 0;
@@ -281,8 +285,26 @@ const scheduler = new Scheduler({
 		const cronLockKey = `cron:${job.id}`;
 		busySessions.add(cronLockKey);
 		try {
-			const r = await execAgentWithFallback(cronLockKey, ws, job.message);
-			return { status: "ok" as const, result: r.lastSegment || r.result, sessionId: r.sessionId };
+			let result: string;
+			if (keepAliveManager.isWaiting(cronLockKey)) {
+				console.log(`[KeepAlive:Cron] 复用会话 ${cronLockKey}`);
+				result = await keepAliveManager.send(cronLockKey, job.message);
+			} else if (!keepAliveManager.get(cronLockKey)) {
+				console.log(`[KeepAlive:Cron] 创建会话 ${cronLockKey}`);
+				const kaOpts: KeepAliveOptions = {
+					agentBin: AGENT_BIN,
+					agentSpawnArgs,
+					apiKey: config.CURSOR_API_KEY,
+					model: config.CURSOR_MODEL,
+				};
+				const { firstResult } = await keepAliveManager.create(cronLockKey, ws, job.message, kaOpts);
+				result = firstResult;
+			} else {
+				console.log(`[KeepAlive:Cron] 会话忙，直接 exec ${cronLockKey}`);
+				const r = await execAgentWithFallback(cronLockKey, ws, job.message);
+				result = r.lastSegment || r.result;
+			}
+			return { status: "ok" as const, result };
 		} catch (err) {
 			return { status: "error" as const, error: err instanceof Error ? err.message : String(err) };
 		} finally {
@@ -2265,12 +2287,19 @@ async function handleInner(
 		return;
 	}
 
-	// /stop、/终止、/停止 → 终止当前会话运行的 agent
+	// /stop、/终止、/停止 → 终止当前会话运行的 agent（含保活会话）
 	if (/^\/(stop|终止|停止)\s*$/i.test(text.trim())) {
 		const { workspace: ws } = route(text);
 		const lk = getLockKey(ws);
+
+		const kaSession = keepAliveManager.get(lk);
 		const agent = activeAgents.get(lk);
-		if (agent) {
+
+		if (kaSession && kaSession.currentStatus !== "closed") {
+			keepAliveManager.close(lk);
+			console.log(`[指令] 终止保活会话 lockKey=${lk}`);
+			await replyCard(messageId, "已终止保活会话。\n\n发送新消息将创建新的保活会话。", { title: "已终止", color: "orange" });
+		} else if (agent) {
 			agent.kill();
 			console.log(`[指令] 终止 agent pid=${agent.pid} session=${lk}`);
 			await replyCard(messageId, "已终止当前任务。\n\n发送新消息将继续在当前会话中对话。", { title: "已终止", color: "orange" });
@@ -2536,6 +2565,11 @@ async function handleInner(
 	// /new、/新对话、/新会话 → 归档当前会话，开启新对话
 	const { workspace, prompt, label } = route(text);
 	if (/^\/(new|新对话|新会话)\s*$/i.test(prompt.trim())) {
+		const oldLockKey = getLockKey(workspace);
+		if (keepAliveManager.get(oldLockKey)) {
+			console.log(`[指令] /新对话 → 关闭保活会话 lockKey=${oldLockKey}`);
+			keepAliveManager.close(oldLockKey);
+		}
 		archiveAndResetSession(workspace);
 		const historyCount = getSessionHistory(workspace).length;
 		const hint = historyCount > 0 ? `\n\n历史会话已保留（共 ${historyCount} 个），发送 \`/会话\` 可查看和切换。` : "";
@@ -2580,6 +2614,8 @@ async function handleInner(
 				await replyCard(messageId, `当前已是会话 #${num}：${target.summary}`, { title: "无需切换", color: "blue" });
 				return;
 			}
+			const oldLk = getLockKey(workspace);
+			if (keepAliveManager.get(oldLk)) keepAliveManager.close(oldLk);
 			switchToSession(workspace, target.id);
 			await replyCard(messageId, `已切换到会话 #${num}：**${target.summary}**\n\n下一条消息将在此会话中继续对话。\n\`${target.id.slice(0, 12)}\` · ${formatRelativeTime(target.lastActiveAt)}`, { title: "💬 已切换", color: "green" });
 			console.log(`[Session] 切换到 ${target.id.slice(0, 12)} (${target.summary})`);
@@ -2590,6 +2626,8 @@ async function handleInner(
 		if (subArg.length >= 4) {
 			const target = history.find((h) => h.id.startsWith(subArg));
 			if (target) {
+				const oldLk = getLockKey(workspace);
+				if (keepAliveManager.get(oldLk)) keepAliveManager.close(oldLk);
 				switchToSession(workspace, target.id);
 				await replyCard(messageId, `已切换到：**${target.summary}**\n\n\`${target.id.slice(0, 12)}\` · ${formatRelativeTime(target.lastActiveAt)}`, { title: "💬 已切换", color: "green" });
 				return;
@@ -2662,10 +2700,47 @@ async function handleInner(
 		const cronCtx = consumeCronContext();
 		const agentPrompt = cronCtx ? cronCtx + prompt : prompt;
 
-		const { result, quotaWarning } = await runAgent(workspace, agentPrompt, { onProgress, onStart });
-		const usedModel = quotaWarning ? "auto" : model;
+		let result: string;
+		let quotaWarning: string | undefined;
+
+		if (keepAliveManager.isWaiting(currentLockKey)) {
+			console.log(`[KeepAlive] 复用等待中的会话 lockKey=${currentLockKey}`);
+			busySessions.add(currentLockKey);
+			onStart?.();
+			try {
+				result = await keepAliveManager.send(currentLockKey, agentPrompt);
+			} finally {
+				busySessions.delete(currentLockKey);
+			}
+		} else if (!keepAliveManager.get(currentLockKey)) {
+			console.log(`[KeepAlive] 创建新保活会话 lockKey=${currentLockKey}`);
+			busySessions.add(currentLockKey);
+			onStart?.();
+			try {
+				const kaOpts: KeepAliveOptions = {
+					agentBin: AGENT_BIN,
+					agentSpawnArgs,
+					apiKey: config.CURSOR_API_KEY,
+					model,
+					sessionId: getActiveSessionId(workspace),
+					onProgress,
+				};
+				const { firstResult } = await keepAliveManager.create(
+					currentLockKey, workspace, agentPrompt, kaOpts,
+				);
+				result = firstResult;
+			} finally {
+				busySessions.delete(currentLockKey);
+			}
+		} else {
+			console.log(`[KeepAlive] 会话忙，回退到普通模式 lockKey=${currentLockKey}`);
+			const r = await runAgent(workspace, agentPrompt, { onProgress, onStart });
+			result = r.result;
+			quotaWarning = r.quotaWarning;
+		}
+
 		const elapsed = formatElapsed(Math.round((Date.now() - taskStart) / 1000));
-		console.log(`[${new Date().toISOString()}] 完成 [${label}] model=${usedModel} elapsed=${elapsed} (${result.length} chars)`);
+		console.log(`[${new Date().toISOString()}] 完成 [${label}] model=${model} elapsed=${elapsed} (${result.length} chars)`);
 
 		// Agent 可能修改了 cron-jobs.json，重新加载调度器
 		scheduler.reload().catch(() => {});
@@ -2884,4 +2959,31 @@ ${list}
 
 	// Worker 模式也执行启动自检
 	setTimeout(runBootCheck, 5000);
+
+	// 为已启用的定时任务预创建保活会话
+	setTimeout(async () => {
+		try {
+			const jobs = await scheduler.list();
+			for (const job of jobs) {
+				const cronLockKey = `cron:${job.id}`;
+				if (keepAliveManager.get(cronLockKey)) continue;
+				const ws = job.workspace || defaultWorkspace;
+				const warmupPrompt = `[系统] 你是定时任务「${job.name}」的专属 Agent。即将进入保活模式等待任务触发。`;
+				const kaOpts: KeepAliveOptions = {
+					agentBin: AGENT_BIN,
+					agentSpawnArgs,
+					apiKey: config.CURSOR_API_KEY,
+					model: config.CURSOR_MODEL,
+				};
+				try {
+					await keepAliveManager.create(cronLockKey, ws, warmupPrompt, kaOpts);
+					console.log(`[KeepAlive:Cron] 预热成功: ${job.name} (${cronLockKey})`);
+				} catch (e) {
+					console.warn(`[KeepAlive:Cron] 预热失败: ${job.name}`, e);
+				}
+			}
+		} catch (e) {
+			console.warn("[KeepAlive:Cron] 预热流程异常:", e);
+		}
+	}, 10000);
 }
